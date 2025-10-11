@@ -50,6 +50,35 @@ class VertexAIImageGenerator:
 
         self.location = location or os.getenv("VERTEX_AI_LOCATION", "us-central1")
 
+        # Handle base64-encoded credentials (for Railway/cloud deployments)
+        creds_env = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if creds_env:
+            # Check if it's base64-encoded (Railway environment)
+            try:
+                # Try to decode as base64
+                decoded = base64.b64decode(creds_env)
+                # If successful, write to temporary file
+                import tempfile
+                import json
+
+                # Verify it's valid JSON
+                creds_json = json.loads(decoded)
+
+                # Create temp file
+                temp_creds = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+                json.dump(creds_json, temp_creds)
+                temp_creds.flush()
+                temp_creds.close()
+
+                # Update environment to point to temp file
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_creds.name
+                logger.info(f"Decoded base64 credentials and wrote to temporary file")
+
+            except (base64.binascii.Error, json.JSONDecodeError, ValueError):
+                # Not base64 or not valid JSON, assume it's a file path
+                logger.info(f"Using credentials from file path: {creds_env}")
+                pass
+
         # Initialize Vertex AI
         vertexai.init(project=self.project_id, location=self.location)
 

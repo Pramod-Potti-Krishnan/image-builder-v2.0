@@ -68,6 +68,14 @@ logs/
 .env.local
 .env.*.local
 
+# Google Cloud credentials
+*.json
+!package.json
+!tsconfig.json
+
+# Helper scripts for credential encoding
+encode_credentials.sh
+
 # Temporary files
 *.tmp
 *.temp
