@@ -5,10 +5,55 @@ Image Build Agent v2.0 - Data Models
 Pydantic models for image generation requests and responses.
 """
 
-from typing import Dict, Any, Optional, Literal
+from typing import Dict, Any, Optional, Literal, List
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 import uuid
+from enum import Enum
+
+
+class ImagenModel(str, Enum):
+    """Available Imagen model versions."""
+    # Imagen 4.0 Series (Latest)
+    IMAGEN_4_ULTRA = "imagen-4.0-ultra-generate-001"
+    IMAGEN_4_STANDARD = "imagen-4.0-generate-001"
+    IMAGEN_4_FAST = "imagen-4.0-fast-generate-001"
+
+    # Imagen 3.0 Series (Stable)
+    IMAGEN_3_STANDARD = "imagen-3.0-generate-002"
+    IMAGEN_3_FAST = "imagen-3.0-fast-generate-001"
+
+    @property
+    def display_name(self) -> str:
+        """Get human-readable name."""
+        return {
+            "imagen-4.0-ultra-generate-001": "Imagen 4.0 Ultra (Highest Quality)",
+            "imagen-4.0-generate-001": "Imagen 4.0 Standard",
+            "imagen-4.0-fast-generate-001": "Imagen 4.0 Fast",
+            "imagen-3.0-generate-002": "Imagen 3.0 Standard (Stable)",
+            "imagen-3.0-fast-generate-001": "Imagen 3.0 Fast (Default)",
+        }.get(self.value, self.value)
+
+    @property
+    def cost_per_image(self) -> float:
+        """Get approximate cost per image."""
+        return {
+            "imagen-4.0-ultra-generate-001": 0.08,
+            "imagen-4.0-generate-001": 0.06,
+            "imagen-4.0-fast-generate-001": 0.03,
+            "imagen-3.0-generate-002": 0.04,
+            "imagen-3.0-fast-generate-001": 0.02,
+        }.get(self.value, 0.04)
+
+    @property
+    def generation_speed(self) -> str:
+        """Get expected generation speed."""
+        if "fast" in self.value:
+            return "Fast (3-5s)"
+        elif "ultra" in self.value:
+            return "Slow (15-20s)"
+        else:
+            return "Medium (7-12s)"
 
 
 class AspectRatio(BaseModel):
@@ -39,6 +84,12 @@ class ImageGenerationRequest(BaseModel):
     # Core requirements
     prompt: str = Field(..., min_length=10, max_length=1000, description="Image generation prompt")
     aspect_ratio: str = Field(default="16:9", description="Aspect ratio (e.g., '16:9', '2:7', '1:1')")
+
+    # Model selection
+    model: Optional[str] = Field(
+        default="imagen-3.0-fast-generate-001",
+        description="Imagen model to use (fast/standard/ultra). Default: fast for cost efficiency"
+    )
 
     # Optional parameters
     archetype: str = Field(
@@ -149,6 +200,33 @@ class ImageRecord(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class BatchImageGenerationRequest(BaseModel):
+    """Request model for batch image generation."""
+    requests: List[ImageGenerationRequest] = Field(
+        ...,
+        min_length=1,
+        max_length=50,
+        description="List of image generation requests (max 50)"
+    )
+    max_concurrent: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Maximum concurrent requests (1-10, default: 5)"
+    )
+
+
+class BatchImageGenerationResponse(BaseModel):
+    """Response model for batch image generation."""
+    success: bool = Field(..., description="Whether batch completed")
+    total_requests: int = Field(..., description="Total number of requests")
+    successful: int = Field(..., description="Number of successful generations")
+    failed: int = Field(..., description="Number of failed generations")
+    results: List[ImageGenerationResponse] = Field(..., description="Individual generation results")
+    batch_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Batch ID")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class HealthCheckResponse(BaseModel):

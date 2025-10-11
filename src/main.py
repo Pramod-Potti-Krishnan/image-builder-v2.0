@@ -20,7 +20,10 @@ import uvicorn
 from .models.image_models import (
     ImageGenerationRequest,
     ImageGenerationResponse,
-    HealthCheckResponse
+    BatchImageGenerationRequest,
+    BatchImageGenerationResponse,
+    HealthCheckResponse,
+    ImagenModel
 )
 from .services.image_generation_service import ImageGenerationService
 from .services.vertex_ai_service import VertexAIImageGenerator
@@ -229,6 +232,106 @@ async def generate_image(
     except Exception as e:
         logger.error(f"Image generation failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v2/generate-batch", response_model=BatchImageGenerationResponse, tags=["Image Generation"])
+async def generate_images_batch(
+    batch_request: BatchImageGenerationRequest,
+    _: str = Depends(verify_api_key)
+):
+    """
+    Generate multiple images with automatic rate limiting.
+
+    Generates multiple images concurrently while respecting Vertex AI quota limits.
+    Uses semaphore-based rate limiting to prevent concurrent request quota errors.
+
+    **Features:**
+    - Automatic rate limiting (default: 5 concurrent requests)
+    - Configurable concurrency (1-10)
+    - Individual error handling per image
+    - Batch progress tracking
+
+    **Example Request:**
+    ```json
+    {
+      "requests": [
+        {
+          "prompt": "A beautiful sunset",
+          "aspect_ratio": "16:9",
+          "model": "imagen-3.0-fast-generate-001"
+        },
+        {
+          "prompt": "A mountain landscape",
+          "aspect_ratio": "1:1",
+          "model": "imagen-3.0-generate-002"
+        }
+      ],
+      "max_concurrent": 5
+    }
+    ```
+
+    **Quota Management:**
+    - Default concurrent limit: 5 (prevents quota errors)
+    - Recommended for 6-50 images
+    - Automatically batches larger requests
+    """
+    if not image_service:
+        raise HTTPException(status_code=503, detail="Image generation service not initialized")
+
+    try:
+        logger.info(f"Received batch generation request: {len(batch_request.requests)} images")
+
+        response = await image_service.generate_batch(batch_request)
+
+        # Return response even if some failed (check response.success for overall status)
+        return response
+
+    except Exception as e:
+        logger.error(f"Batch generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v2/models", tags=["Configuration"])
+async def list_available_models():
+    """
+    List available Imagen models with details.
+
+    Returns information about all available Imagen models including:
+    - Model names and versions
+    - Cost per image
+    - Generation speed
+    - Quality tier
+
+    **Example Response:**
+    ```json
+    {
+      "models": [
+        {
+          "name": "imagen-3.0-fast-generate-001",
+          "display_name": "Imagen 3.0 Fast (Default)",
+          "cost_per_image": 0.02,
+          "speed": "Fast (3-5s)",
+          "recommended": true
+        },
+        ...
+      ]
+    }
+    ```
+    """
+    models = []
+    for model in ImagenModel:
+        models.append({
+            "name": model.value,
+            "display_name": model.display_name,
+            "cost_per_image": model.cost_per_image,
+            "speed": model.generation_speed,
+            "recommended": model == ImagenModel.IMAGEN_3_FAST
+        })
+
+    return {
+        "models": models,
+        "default": ImagenModel.IMAGEN_3_FAST.value
+    }
 
 
 @app.get("/api/v2/images/{image_id}", tags=["Images"])

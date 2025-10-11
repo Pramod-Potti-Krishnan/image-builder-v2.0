@@ -13,10 +13,17 @@ Orchestrates the complete image generation workflow:
 
 import logging
 import time
-from typing import Dict, Any, Optional
+import asyncio
+from typing import Dict, Any, Optional, List
 import uuid
 
-from ..models.image_models import ImageGenerationRequest, ImageGenerationResponse, ImageRecord
+from ..models.image_models import (
+    ImageGenerationRequest,
+    ImageGenerationResponse,
+    BatchImageGenerationRequest,
+    BatchImageGenerationResponse,
+    ImageRecord
+)
 from .vertex_ai_service import VertexAIImageGenerator, remove_white_background, should_remove_background
 from .aspect_ratio_engine import get_aspect_ratio_strategy, crop_image_to_aspect_ratio
 from .storage_service import SupabaseStorageService
@@ -78,7 +85,8 @@ class ImageGenerationService:
             generation_result = await self.vertex_ai.generate_image(
                 prompt=request.prompt,
                 aspect_ratio=source_ratio,
-                negative_prompt=request.negative_prompt
+                negative_prompt=request.negative_prompt,
+                model_name=request.model
             )
 
             if not generation_result["success"]:
@@ -153,7 +161,7 @@ class ImageGenerationService:
             generation_time_ms = int((time.time() - start_time) * 1000)
 
             metadata = {
-                "model": "imagen-3.0-generate-002",
+                "model": generation_result["metadata"].get("model", request.model),
                 "platform": "vertex-ai",
                 "source_aspect_ratio": source_ratio,
                 "target_aspect_ratio": request.aspect_ratio,
@@ -200,7 +208,7 @@ class ImageGenerationService:
                         paths=upload_result.get("paths", {}),
                         negative_prompt=request.negative_prompt,
                         crop_anchor=request.options.get("crop_anchor", "center"),
-                        model="imagen-3.0-generate-002",
+                        model=generation_result["metadata"].get("model", request.model),
                         platform="vertex-ai",
                         generation_time_ms=generation_time_ms,
                         original_size_bytes=len(original_bytes),
@@ -230,6 +238,76 @@ class ImageGenerationService:
                 error=str(e),
                 metadata={"generation_time_ms": int((time.time() - start_time) * 1000)}
             )
+
+    async def generate_batch(
+        self,
+        batch_request: BatchImageGenerationRequest
+    ) -> BatchImageGenerationResponse:
+        """
+        Generate multiple images with automatic rate limiting using semaphore.
+
+        This method prevents hitting Vertex AI concurrent request limits by
+        using a semaphore to control how many images are generated simultaneously.
+
+        Args:
+            batch_request: Batch generation request with list of image requests
+
+        Returns:
+            Batch generation response with results for each image
+        """
+        batch_start_time = time.time()
+        batch_id = str(uuid.uuid4())
+
+        logger.info(f"Starting batch generation (ID: {batch_id}, count: {len(batch_request.requests)}, max_concurrent: {batch_request.max_concurrent})")
+
+        # Create semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(batch_request.max_concurrent)
+
+        async def generate_with_limit(request: ImageGenerationRequest, index: int) -> ImageGenerationResponse:
+            """Generate single image with semaphore rate limiting."""
+            async with semaphore:  # Acquire semaphore slot
+                logger.info(f"[Batch {batch_id}] Generating image {index+1}/{len(batch_request.requests)}...")
+
+                try:
+                    result = await self.generate(request)
+                    logger.info(f"[Batch {batch_id}] Completed image {index+1}/{len(batch_request.requests)} - Success: {result.success}")
+                    return result
+                except Exception as e:
+                    logger.error(f"[Batch {batch_id}] Error generating image {index+1}: {e}")
+                    return ImageGenerationResponse(
+                        success=False,
+                        error=str(e)
+                    )
+
+        # Generate all images with automatic rate limiting
+        tasks = [
+            generate_with_limit(req, i)
+            for i, req in enumerate(batch_request.requests)
+        ]
+
+        # Execute all tasks concurrently (semaphore controls actual concurrency)
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+
+        # Count successes and failures
+        successful = sum(1 for r in results if r.success)
+        failed = len(results) - successful
+
+        batch_duration = time.time() - batch_start_time
+
+        logger.info(
+            f"Batch generation completed (ID: {batch_id}) - "
+            f"Total: {len(results)}, Successful: {successful}, Failed: {failed}, "
+            f"Duration: {batch_duration:.1f}s"
+        )
+
+        return BatchImageGenerationResponse(
+            success=failed == 0,  # Success only if all succeeded
+            total_requests=len(batch_request.requests),
+            successful=successful,
+            failed=failed,
+            results=results,
+            batch_id=batch_id
+        )
 
 
 # For testing

@@ -30,16 +30,18 @@ logger = logging.getLogger(__name__)
 
 class VertexAIImageGenerator:
     """
-    Service for generating images using Google Cloud Vertex AI Imagen 3.
+    Service for generating images using Google Cloud Vertex AI Imagen models.
+    Supports multiple Imagen versions (3.0 and 4.0, fast/standard/ultra).
     """
 
-    def __init__(self, project_id: Optional[str] = None, location: Optional[str] = None):
+    def __init__(self, project_id: Optional[str] = None, location: Optional[str] = None, default_model: Optional[str] = None):
         """
         Initialize Vertex AI image generator.
 
         Args:
             project_id: Google Cloud project ID (defaults to GOOGLE_CLOUD_PROJECT env var)
             location: Vertex AI location (defaults to VERTEX_AI_LOCATION env var or us-central1)
+            default_model: Default Imagen model to use (defaults to imagen-3.0-fast-generate-001)
         """
         if not VERTEX_AI_AVAILABLE:
             raise ImportError("google-cloud-aiplatform not installed. Run: pip install google-cloud-aiplatform")
@@ -49,6 +51,8 @@ class VertexAIImageGenerator:
             raise ValueError("GOOGLE_CLOUD_PROJECT must be set (env var or constructor)")
 
         self.location = location or os.getenv("VERTEX_AI_LOCATION", "us-central1")
+        self.default_model = default_model or os.getenv("DEFAULT_IMAGEN_MODEL", "imagen-3.0-fast-generate-001")
+        self.models_cache = {}  # Cache loaded models
 
         # Handle base64-encoded credentials (for Railway/cloud deployments)
         creds_env = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
@@ -82,26 +86,41 @@ class VertexAIImageGenerator:
         # Initialize Vertex AI
         vertexai.init(project=self.project_id, location=self.location)
 
-        # Load model
-        self.model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
+        logger.info(f"Initialized Vertex AI Imagen (project: {self.project_id}, location: {self.location}, default_model: {self.default_model})")
 
-        logger.info(f"Initialized Vertex AI Imagen (project: {self.project_id}, location: {self.location})")
+    def _get_model(self, model_name: str) -> ImageGenerationModel:
+        """
+        Get or load an Imagen model (with caching).
+
+        Args:
+            model_name: Model identifier (e.g., "imagen-3.0-fast-generate-001")
+
+        Returns:
+            ImageGenerationModel instance
+        """
+        if model_name not in self.models_cache:
+            logger.info(f"Loading Imagen model: {model_name}")
+            self.models_cache[model_name] = ImageGenerationModel.from_pretrained(model_name)
+
+        return self.models_cache[model_name]
 
     async def generate_image(
         self,
         prompt: str,
         aspect_ratio: str = "16:9",
         negative_prompt: Optional[str] = None,
-        number_of_images: int = 1
+        number_of_images: int = 1,
+        model_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Generate image using Vertex AI Imagen 3.
+        Generate image using Vertex AI Imagen models.
 
         Args:
             prompt: Image generation prompt
             aspect_ratio: Aspect ratio (1:1, 3:4, 4:3, 9:16, 16:9)
             negative_prompt: What to avoid in the image
             number_of_images: Number of images to generate (default 1)
+            model_name: Specific model to use (defaults to self.default_model)
 
         Returns:
             Dictionary with:
@@ -111,12 +130,18 @@ class VertexAIImageGenerator:
             - metadata: dict with generation info
             - error: str (if failed)
         """
+        # Select model
+        selected_model = model_name or self.default_model
+
         try:
-            logger.info(f"Generating image with Imagen 3 (aspect_ratio: {aspect_ratio})")
+            logger.info(f"Generating image with {selected_model} (aspect_ratio: {aspect_ratio})")
             logger.info(f"Prompt: {prompt[:100]}...")
 
+            # Get model instance
+            model = self._get_model(selected_model)
+
             # Generate image
-            response = self.model.generate_images(
+            response = model.generate_images(
                 prompt=prompt,
                 number_of_images=number_of_images,
                 aspect_ratio=aspect_ratio,
@@ -140,7 +165,7 @@ class VertexAIImageGenerator:
                     "image_bytes": image_bytes,
                     "base64": img_base64,
                     "metadata": {
-                        "model": "imagen-3.0-generate-002",
+                        "model": selected_model,
                         "aspect_ratio": aspect_ratio,
                         "prompt": prompt,
                         "platform": "vertex-ai",
