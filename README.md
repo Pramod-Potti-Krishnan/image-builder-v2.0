@@ -2,6 +2,19 @@
 
 AI-powered image generation microservice with custom aspect ratio support, cloud storage, and REST API.
 
+## 🌐 Production API
+
+**Live API**: `https://web-production-1b5df.up.railway.app`
+
+The service is **deployed and operational** on Railway!
+
+**Quick Test:**
+```bash
+curl https://web-production-1b5df.up.railway.app/api/v2/health
+```
+
+**API Documentation**: https://web-production-1b5df.up.railway.app/docs
+
 ## 🌟 Key Features
 
 ### 1. **Custom Aspect Ratios**
@@ -97,6 +110,24 @@ Visit http://localhost:8000/docs for interactive API documentation.
 
 ### Generate Image with Custom Aspect Ratio
 
+**Production API:**
+```bash
+curl -X POST "https://web-production-1b5df.up.railway.app/api/v2/generate" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "prompt": "A modern tech startup logo with blue gradient",
+    "aspect_ratio": "2:7",
+    "archetype": "minimalist_vector_art",
+    "options": {
+      "remove_background": true,
+      "crop_anchor": "center",
+      "store_in_cloud": true
+    }
+  }'
+```
+
+**Local Development:**
 ```bash
 curl -X POST "http://localhost:8000/api/v2/generate" \
   -H "Content-Type: application/json" \
@@ -136,6 +167,7 @@ curl -X POST "http://localhost:8000/api/v2/generate" \
 
 ### Python SDK Usage
 
+**Production API:**
 ```python
 import httpx
 import asyncio
@@ -143,7 +175,7 @@ import asyncio
 async def generate_image():
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            "http://localhost:8000/api/v2/generate",
+            "https://web-production-1b5df.up.railway.app/api/v2/generate",
             json={
                 "prompt": "Beautiful mountain landscape at sunset",
                 "aspect_ratio": "21:9",
@@ -158,6 +190,8 @@ async def generate_image():
 result = asyncio.run(generate_image())
 print(f"Image URL: {result['urls']['cropped']}")
 ```
+
+**For local development**, replace the URL with `http://localhost:8000/api/v2/generate`
 
 ---
 
@@ -287,7 +321,14 @@ Health check endpoint.
 
 ## 🚢 Deployment
 
-### Deploy to Railway
+### ✅ Currently Deployed on Railway
+
+**Production URL**: `https://web-production-1b5df.up.railway.app`
+**GitHub Repository**: `https://github.com/Pramod-Potti-Krishnan/image-builder-v2.0`
+
+The service is **live and operational**. Railway automatically deploys on push to the main branch.
+
+### Deploy Your Own Instance
 
 1. **Connect Repository**:
    ```bash
