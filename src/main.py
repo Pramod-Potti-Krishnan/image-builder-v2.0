@@ -12,7 +12,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
@@ -29,6 +29,7 @@ from .services.image_generation_service import ImageGenerationService
 from .services.vertex_ai_service import VertexAIImageGenerator
 from .services.storage_service import SupabaseStorageService
 from .config.settings import get_settings
+from .middleware.ip_allowlist import IPAllowlistMiddleware
 
 # Configure logging
 logging.basicConfig(
@@ -101,17 +102,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add IP Allowlist middleware (security layer)
+# This replaces API_KEYS authentication with IP-based access control
+settings_for_middleware = get_settings()
+app.add_middleware(
+    IPAllowlistMiddleware,
+    allowed_ips=settings_for_middleware.allowed_ips_list,
+    allow_local=settings_for_middleware.allow_local_ips,
+    enable_allowlist=settings_for_middleware.enable_ip_allowlist
+)
 
-# API Key dependency
-async def verify_api_key(x_api_key: Optional[str] = Header(None)):
-    """Verify API key if API_KEYS is configured."""
-    settings = get_settings()
 
-    if settings.api_keys_list:
-        if not x_api_key or x_api_key not in settings.api_keys_list:
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
-
-    return x_api_key
+# Note: API Key authentication has been replaced with IP Allowlist middleware
+# All security is now handled at the middleware level based on allowed IPs
+# This provides better security for internal service-to-service communication
 
 
 # Routes
@@ -168,10 +172,7 @@ async def health_check():
 
 
 @app.post("/api/v2/generate", response_model=ImageGenerationResponse, tags=["Generation"])
-async def generate_image(
-    request: ImageGenerationRequest,
-    _: str = Depends(verify_api_key)
-):
+async def generate_image(request: ImageGenerationRequest):
     """
     Generate an image using AI.
 
@@ -235,10 +236,7 @@ async def generate_image(
 
 
 @app.post("/api/v2/generate-batch", response_model=BatchImageGenerationResponse, tags=["Image Generation"])
-async def generate_images_batch(
-    batch_request: BatchImageGenerationRequest,
-    _: str = Depends(verify_api_key)
-):
+async def generate_images_batch(batch_request: BatchImageGenerationRequest):
     """
     Generate multiple images with automatic rate limiting.
 
@@ -335,7 +333,7 @@ async def list_available_models():
 
 
 @app.get("/api/v2/images/{image_id}", tags=["Images"])
-async def get_image(image_id: str, _: str = Depends(verify_api_key)):
+async def get_image(image_id: str):
     """
     Get metadata for a generated image.
 
@@ -347,7 +345,7 @@ async def get_image(image_id: str, _: str = Depends(verify_api_key)):
 
 
 @app.get("/api/v2/images", tags=["Images"])
-async def list_images(_: str = Depends(verify_api_key)):
+async def list_images():
     """
     List generated images.
 
@@ -358,7 +356,7 @@ async def list_images(_: str = Depends(verify_api_key)):
 
 
 @app.delete("/api/v2/images/{image_id}", tags=["Images"])
-async def delete_image(image_id: str, _: str = Depends(verify_api_key)):
+async def delete_image(image_id: str):
     """
     Delete a generated image.
 

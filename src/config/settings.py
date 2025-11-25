@@ -32,7 +32,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_workers: int = 4
-    api_keys: Optional[str] = None  # Changed to string, will parse in __init__
+
+    # IP Allowlist Security (replaces API_KEYS)
+    allowed_ips: Optional[str] = None  # Comma-separated list of allowed IPs
+    enable_ip_allowlist: bool = True  # Enable IP-based access control
+    allow_local_ips: bool = True  # Allow localhost (for development)
 
     # Application Settings
     environment: str = "development"
@@ -58,20 +62,20 @@ class Settings(BaseSettings):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        # Parse API keys if provided as comma-separated string
-        if self.api_keys and isinstance(self.api_keys, str):
-            self._api_keys_list = [k.strip() for k in self.api_keys.split(',') if k.strip()]
+        # Parse allowed IPs if provided as comma-separated string
+        if self.allowed_ips and isinstance(self.allowed_ips, str):
+            self._allowed_ips_list = [ip.strip() for ip in self.allowed_ips.split(',') if ip.strip()]
         else:
-            self._api_keys_list = []
+            self._allowed_ips_list = []
 
         # Use Railway's PORT if available
         if self.port:
             self.api_port = self.port
 
     @property
-    def api_keys_list(self) -> List[str]:
-        """Get parsed API keys as list."""
-        return self._api_keys_list
+    def allowed_ips_list(self) -> List[str]:
+        """Get parsed allowed IPs as list."""
+        return self._allowed_ips_list
 
     @property
     def is_production(self) -> bool:
