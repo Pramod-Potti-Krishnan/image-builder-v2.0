@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Image Build Agent v2.0",
     description="AI-powered image generation with custom aspect ratios and cloud storage",
-    version="2.0.0",
+    version="2.0.1",
     lifespan=lifespan
 )
 
@@ -126,7 +126,7 @@ async def root():
     return {
         "service": "Image Build Agent v2.0",
         "status": "running",
-        "version": "2.0.0",
+        "version": "2.0.1",
         "docs": "/docs"
     }
 
@@ -158,7 +158,7 @@ async def health_check():
 
         return HealthCheckResponse(
             status=status,
-            version="2.0.0",
+            version="2.0.1",
             services=services_status
         )
 
@@ -166,7 +166,7 @@ async def health_check():
         logger.error(f"Health check failed: {e}")
         return HealthCheckResponse(
             status="unhealthy",
-            version="2.0.0",
+            version="2.0.1",
             services={}
         )
 
