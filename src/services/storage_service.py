@@ -209,6 +209,136 @@ class SupabaseStorageService:
         """Get public URL for a storage path."""
         return self.client.storage.from_(self.bucket).get_public_url(path)
 
+    def upload_with_thumbnail(
+        self,
+        generation_id: str,
+        image_bytes: bytes,
+        thumbnail_bytes: bytes,
+        folder: str = "layout-images",
+        bucket: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Upload image and thumbnail to Supabase Storage.
+
+        Creates a folder structure:
+        {folder}/{generation_id}/original.png
+        {folder}/{generation_id}/thumbnail.png
+
+        Args:
+            generation_id: Unique generation identifier
+            image_bytes: Full image bytes
+            thumbnail_bytes: Thumbnail image bytes
+            folder: Root folder path (default: "layout-images")
+            bucket: Override bucket (uses self.bucket if None)
+
+        Returns:
+            Dictionary with:
+            - success: bool
+            - image_url: str (full image public URL)
+            - thumbnail_url: str (thumbnail public URL)
+            - image_path: str (storage path for image)
+            - thumbnail_path: str (storage path for thumbnail)
+            - image_size_bytes: int
+            - thumbnail_size_bytes: int
+            - error: str (if failed)
+        """
+        target_bucket = bucket or self.bucket
+
+        try:
+            # Paths for image and thumbnail
+            image_path = f"{folder}/{generation_id}/original.png"
+            thumbnail_path = f"{folder}/{generation_id}/thumbnail.png"
+
+            # Upload original image
+            logger.info(f"Uploading image to: {image_path}")
+            image_response = self.client.storage.from_(target_bucket).upload(
+                path=image_path,
+                file=image_bytes,
+                file_options={"content-type": "image/png"}
+            )
+
+            # Upload thumbnail
+            logger.info(f"Uploading thumbnail to: {thumbnail_path}")
+            thumb_response = self.client.storage.from_(target_bucket).upload(
+                path=thumbnail_path,
+                file=thumbnail_bytes,
+                file_options={"content-type": "image/png"}
+            )
+
+            # Get public URLs
+            image_url = self.client.storage.from_(target_bucket).get_public_url(image_path)
+            thumbnail_url = self.client.storage.from_(target_bucket).get_public_url(thumbnail_path)
+
+            logger.info(f"Successfully uploaded image and thumbnail for {generation_id}")
+
+            return {
+                "success": True,
+                "image_url": image_url,
+                "thumbnail_url": thumbnail_url,
+                "image_path": image_path,
+                "thumbnail_path": thumbnail_path,
+                "image_size_bytes": len(image_bytes),
+                "thumbnail_size_bytes": len(thumbnail_bytes)
+            }
+
+        except Exception as e:
+            logger.error(f"Upload with thumbnail failed for {generation_id}: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def upload_layout_image(
+        self,
+        generation_id: str,
+        image_bytes: bytes,
+        thumbnail_bytes: Optional[bytes] = None,
+        folder: str = "layout-images"
+    ) -> Dict[str, Any]:
+        """
+        Upload a Layout Service generated image.
+
+        Convenience wrapper that handles both with and without thumbnail.
+
+        Args:
+            generation_id: Unique generation identifier
+            image_bytes: Full image bytes
+            thumbnail_bytes: Optional thumbnail bytes
+            folder: Root folder path
+
+        Returns:
+            Upload result dictionary
+        """
+        if thumbnail_bytes:
+            return self.upload_with_thumbnail(
+                generation_id=generation_id,
+                image_bytes=image_bytes,
+                thumbnail_bytes=thumbnail_bytes,
+                folder=folder
+            )
+        else:
+            # Upload just the image
+            image_path = f"{folder}/{generation_id}/original.png"
+
+            result = self.upload_image(
+                image_bytes=image_bytes,
+                filename=f"{generation_id}/original.png",
+                folder=folder
+            )
+
+            if result["success"]:
+                return {
+                    "success": True,
+                    "image_url": result["url"],
+                    "thumbnail_url": result["url"],  # Same as image if no thumbnail
+                    "image_path": result["path"],
+                    "thumbnail_path": result["path"],
+                    "image_size_bytes": len(image_bytes),
+                    "thumbnail_size_bytes": len(image_bytes)
+                }
+            else:
+                return result
+
 
 # For testing purposes
 if __name__ == "__main__":

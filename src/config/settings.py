@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     enable_transparent_png: bool = True
     enable_custom_aspect_ratios: bool = True
 
+    # Layout Service Settings
+    layout_images_bucket: str = "layout-images"
+    default_credits_per_presentation: int = 100
+    enable_credits_tracking: bool = True
+    thumbnail_size: int = 256
+
     # Railway / Production
     port: Optional[int] = None  # Railway sets PORT env var
 

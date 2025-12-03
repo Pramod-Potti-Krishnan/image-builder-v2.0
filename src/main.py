@@ -1,11 +1,12 @@
 """
-Image Build Agent v2.0 - FastAPI Application
+Image Build Agent v2.1 - FastAPI Application
 ============================================
 
 REST API microservice for AI image generation with:
 - Custom aspect ratio support
 - Supabase cloud storage
 - Vertex AI Imagen 3 generation
+- Layout Service integration with style mapping and credits
 """
 
 import logging
@@ -25,9 +26,17 @@ from .models.image_models import (
     HealthCheckResponse,
     ImagenModel
 )
+from .models.layout_service_models import (
+    LayoutImageGenerateRequest,
+    LayoutImageGenerateResponse,
+    ErrorCodes
+)
 from .services.image_generation_service import ImageGenerationService
 from .services.vertex_ai_service import VertexAIImageGenerator
 from .services.storage_service import SupabaseStorageService
+from .services.layout_generation_service import LayoutGenerationService
+from .services.credits_service import CreditsService
+from .services.style_engine import get_style_names, get_style_descriptions
 from .config.settings import get_settings
 from .middleware.ip_allowlist import IPAllowlistMiddleware
 
@@ -40,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 # Global service instances
 image_service: Optional[ImageGenerationService] = None
+layout_service: Optional[LayoutGenerationService] = None
 
 
 @asynccontextmanager
@@ -48,15 +58,15 @@ async def lifespan(app: FastAPI):
     Application lifespan manager.
     Initializes services on startup, cleans up on shutdown.
     """
-    global image_service
+    global image_service, layout_service
 
     # Startup
-    logger.info("Initializing Image Build Agent v2.0...")
+    logger.info("Initializing Image Build Agent v2.1...")
 
     try:
         settings = get_settings()
 
-        # Initialize services
+        # Initialize core services
         vertex_ai = VertexAIImageGenerator(
             project_id=settings.google_cloud_project,
             location=settings.vertex_ai_location
@@ -68,12 +78,36 @@ async def lifespan(app: FastAPI):
             bucket=settings.supabase_bucket
         )
 
+        # Initialize original image service (v2 API)
         image_service = ImageGenerationService(
             vertex_ai_generator=vertex_ai,
             storage_service=storage
         )
 
-        logger.info("✅ Image Build Agent v2.0 initialized successfully")
+        # Initialize Layout Service components
+        credits_service = None
+        if settings.enable_credits_tracking:
+            try:
+                credits_service = CreditsService(
+                    default_credits=settings.default_credits_per_presentation
+                )
+                logger.info("✅ Credits tracking enabled")
+            except Exception as e:
+                logger.warning(f"Credits service not available: {e}")
+
+        # Initialize Layout Generation Service
+        layout_service = LayoutGenerationService(
+            vertex_ai_generator=vertex_ai,
+            storage_service=storage,
+            credits_service=credits_service,
+            enable_credits=settings.enable_credits_tracking,
+            thumbnail_size=settings.thumbnail_size
+        )
+
+        logger.info("✅ Image Build Agent v2.1 initialized successfully")
+        logger.info(f"   - Layout Service: enabled")
+        logger.info(f"   - Credits tracking: {settings.enable_credits_tracking}")
+        logger.info(f"   - Thumbnail size: {settings.thumbnail_size}px")
 
     except Exception as e:
         logger.error(f"❌ Failed to initialize services: {e}")
@@ -82,14 +116,14 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    logger.info("Shutting down Image Build Agent v2.0...")
+    logger.info("Shutting down Image Build Agent v2.1...")
 
 
 # Create FastAPI application
 app = FastAPI(
-    title="Image Build Agent v2.0",
-    description="AI-powered image generation with custom aspect ratios and cloud storage",
-    version="2.0.1",
+    title="Image Build Agent v2.1",
+    description="AI-powered image generation with custom aspect ratios, cloud storage, and Layout Service integration",
+    version="2.1.0",
     lifespan=lifespan
 )
 
@@ -124,10 +158,19 @@ app.add_middleware(
 async def root():
     """Root endpoint."""
     return {
-        "service": "Image Build Agent v2.0",
+        "service": "Image Build Agent v2.1",
         "status": "running",
-        "version": "2.0.1",
-        "docs": "/docs"
+        "version": "2.1.0",
+        "docs": "/docs",
+        "endpoints": {
+            "v2_generate": "/api/v2/generate",
+            "v2_batch": "/api/v2/generate-batch",
+            "v2_models": "/api/v2/models",
+            "layout_generate": "/api/ai/image/generate",
+            "layout_styles": "/api/ai/image/styles",
+            "layout_credits": "/api/ai/image/credits/{presentation_id}",
+            "health": "/api/v2/health"
+        }
     }
 
 
@@ -145,7 +188,8 @@ async def health_check():
         services_status = {
             "vertex_ai": image_service is not None and image_service.vertex_ai is not None,
             "supabase": image_service is not None and image_service.storage is not None,
-            "image_service": image_service is not None
+            "image_service": image_service is not None,
+            "layout_service": layout_service is not None
         }
 
         # Determine overall status
@@ -158,7 +202,7 @@ async def health_check():
 
         return HealthCheckResponse(
             status=status,
-            version="2.0.1",
+            version="2.1.0",
             services=services_status
         )
 
@@ -166,7 +210,7 @@ async def health_check():
         logger.error(f"Health check failed: {e}")
         return HealthCheckResponse(
             status="unhealthy",
-            version="2.0.1",
+            version="2.1.0",
             services={}
         )
 
@@ -331,6 +375,210 @@ async def list_available_models():
         "default": ImagenModel.IMAGEN_3_FAST.value
     }
 
+
+# ============================================================================
+# Layout Service Endpoints
+# ============================================================================
+
+@app.post("/api/ai/image/generate", response_model=LayoutImageGenerateResponse, tags=["Layout Service"])
+async def generate_layout_image(request: LayoutImageGenerateRequest):
+    """
+    Generate an image for Layout Service.
+
+    This endpoint is optimized for the Layout Service with:
+    - Style-based prompt enhancement (realistic, illustration, abstract, minimal, photo)
+    - Quality tiers with credit costs (draft=1, standard=2, high=4, ultra=8)
+    - Automatic thumbnail generation (256px)
+    - Grid-based aspect ratio calculation
+    - Credits tracking per presentation
+
+    **Example Request:**
+    ```json
+    {
+      "prompt": "A team meeting in a modern office",
+      "presentationId": "pres-123",
+      "slideId": "slide-456",
+      "elementId": "img-789",
+      "context": {
+        "title": "Q4 Business Review",
+        "theme": "corporate",
+        "slideTitle": "Team Collaboration",
+        "slideIndex": 3,
+        "brandColors": ["#1a73e8", "#ffffff"]
+      },
+      "config": {
+        "style": "realistic",
+        "aspectRatio": "16:9",
+        "quality": "high"
+      },
+      "constraints": {
+        "gridWidth": 8,
+        "gridHeight": 6
+      },
+      "options": {
+        "colorScheme": "warm",
+        "lighting": "natural"
+      }
+    }
+    ```
+
+    **Example Response:**
+    ```json
+    {
+      "success": true,
+      "data": {
+        "generationId": "550e8400-e29b-41d4-a716-446655440000",
+        "images": [{
+          "id": "img-001",
+          "url": "https://.../layout-images/550e8400.../original.png",
+          "thumbnailUrl": "https://.../layout-images/550e8400.../thumbnail.png",
+          "width": 1536,
+          "height": 864,
+          "format": "png",
+          "sizeBytes": 2457600
+        }],
+        "metadata": {
+          "prompt": "A team meeting in a modern office",
+          "style": "realistic",
+          "aspectRatio": "16:9",
+          "dimensions": {"width": 1536, "height": 864},
+          "provider": "vertex-ai",
+          "model": "imagen-3.0-fast-generate-001",
+          "generationTime": 4523
+        },
+        "usage": {
+          "creditsUsed": 4,
+          "creditsRemaining": 96
+        }
+      }
+    }
+    ```
+
+    **Error Codes:**
+    - `INSUFFICIENT_CREDITS`: Not enough credits (not retryable)
+    - `INVALID_STYLE`: Unknown style specified (not retryable)
+    - `GENERATION_FAILED`: AI generation error (retryable)
+    - `STORAGE_ERROR`: Upload failed (retryable)
+    - `INTERNAL_ERROR`: Unexpected error (retryable)
+    """
+    if not layout_service:
+        raise HTTPException(
+            status_code=503,
+            detail="Layout generation service not initialized"
+        )
+
+    try:
+        logger.info(
+            f"Layout generation request: presentation={request.presentationId}, "
+            f"style={request.config.style}, quality={request.config.quality}"
+        )
+
+        response = await layout_service.generate(request)
+
+        if not response.success and response.error:
+            # Return structured error response (don't raise HTTPException)
+            # This allows the Layout Service to handle errors gracefully
+            logger.warning(
+                f"Layout generation failed: {response.error.code} - {response.error.message}"
+            )
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Layout generation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ai/image/styles", tags=["Layout Service"])
+async def list_available_styles():
+    """
+    List available image styles for Layout Service.
+
+    Returns all available styles with descriptions and prompt modifiers.
+    Use these style names in the `config.style` field of generation requests.
+
+    **Example Response:**
+    ```json
+    {
+      "styles": [
+        {
+          "name": "realistic",
+          "description": "Photorealistic images with natural lighting",
+          "recommended_for": ["business", "corporate", "professional"]
+        },
+        {
+          "name": "illustration",
+          "description": "Digital illustration with clean vector-style graphics",
+          "recommended_for": ["creative", "educational", "playful"]
+        },
+        ...
+      ],
+      "default": "realistic"
+    }
+    ```
+    """
+    styles = []
+    style_names = get_style_names()
+    style_descriptions = get_style_descriptions()
+
+    for name in style_names:
+        desc = style_descriptions.get(name, {})
+        styles.append({
+            "name": name,
+            "description": desc.get("description", ""),
+            "recommended_for": desc.get("recommended_for", [])
+        })
+
+    return {
+        "styles": styles,
+        "default": "realistic"
+    }
+
+
+@app.get("/api/ai/image/credits/{presentation_id}", tags=["Layout Service"])
+async def get_presentation_credits(presentation_id: str):
+    """
+    Get credit balance for a presentation.
+
+    Returns the current credit status including total, used, and remaining credits.
+
+    **Example Response:**
+    ```json
+    {
+      "presentationId": "pres-123",
+      "totalCredits": 100,
+      "usedCredits": 12,
+      "remainingCredits": 88
+    }
+    ```
+    """
+    if not layout_service or not layout_service.credits:
+        return {
+            "presentationId": presentation_id,
+            "totalCredits": 100,
+            "usedCredits": 0,
+            "remainingCredits": 100,
+            "note": "Credits tracking not enabled"
+        }
+
+    try:
+        credits = layout_service.credits.get_credits(presentation_id)
+        return {
+            "presentationId": presentation_id,
+            "totalCredits": credits["total_credits"],
+            "usedCredits": credits["used_credits"],
+            "remainingCredits": credits["remaining_credits"]
+        }
+    except Exception as e:
+        logger.error(f"Failed to get credits for {presentation_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Original v2 API Endpoints (Database placeholders)
+# ============================================================================
 
 @app.get("/api/v2/images/{image_id}", tags=["Images"])
 async def get_image(image_id: str):

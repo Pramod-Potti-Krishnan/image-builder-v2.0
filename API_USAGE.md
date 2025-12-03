@@ -12,11 +12,9 @@ AI-powered image generation API using Google Vertex AI Imagen 3. Generates high-
 
 ## Authentication
 
-### API Key (Optional)
-If API keys are configured, include in request headers:
-```http
-X-API-Key: your-api-key-here
-```
+**No authentication required** for authorized services. Access is controlled via IP allowlist at the network level.
+
+Your service IP has been pre-authorized - simply make requests directly to the API endpoints.
 
 ---
 
@@ -37,13 +35,13 @@ curl https://web-production-1b5df.up.railway.app/api/v2/health
 ```json
 {
   "status": "healthy",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "services": {
     "vertex_ai": true,
     "supabase": true,
     "image_service": true
   },
-  "timestamp": "2025-10-11T03:17:35.935636"
+  "timestamp": "2025-11-26T15:21:45.655410"
 }
 ```
 
@@ -624,7 +622,14 @@ For issues or questions:
 
 ## Changelog
 
-### v2.0.0 (Current)
+### v2.0.1 (Current - 2025-11-26)
+- **Security**: Migrated to Service Account authentication for Vertex AI
+- **Security**: Implemented IP allowlist for network-level access control
+- **Fixed**: Resolved 500 errors from authentication failures
+- **Improved**: Enhanced security with Google Cloud Service Account
+- **Removed**: Deprecated API key authentication
+
+### v2.0.0 (2024-10-11)
 - Custom aspect ratio support with intelligent cropping
 - Background removal for transparent PNGs
 - PostgreSQL database integration
