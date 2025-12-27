@@ -9,8 +9,9 @@ google-cloud-aiplatform>=1.40.0,<2.0.0  # Imagen 3 (fallback)
 google-genai>=1.56.0  # Gemini 2.5 Flash Image (default)
 
 # Supabase (storage and database)
-supabase>=2.0.0,<3.0.0
-postgrest>=0.13.0,<1.0.0
+# Pin to 2.10.0 - newer versions have breaking API changes with PostgREST client
+supabase==2.10.0
+postgrest==0.17.0
 
 # Image Processing
 Pillow>=10.0.0,<11.0.0

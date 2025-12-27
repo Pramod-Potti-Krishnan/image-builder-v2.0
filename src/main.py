@@ -66,12 +66,7 @@ async def lifespan(app: FastAPI):
     try:
         settings = get_settings()
 
-        # Initialize core services
-        vertex_ai = VertexAIImageGenerator(
-            project_id=settings.google_cloud_project,
-            location=settings.vertex_ai_location
-        )
-
+        # Initialize storage service
         storage = SupabaseStorageService(
             url=settings.supabase_url,
             key=settings.supabase_key,
@@ -79,9 +74,19 @@ async def lifespan(app: FastAPI):
         )
 
         # Initialize original image service (v2 API)
+        # NOTE: Do NOT pass vertex_ai_generator - let ImageGenerationService
+        # handle its own initialization with the fallback chain:
+        # Primary: Gemini 2.5 Flash Image
+        # Fallback 1: Imagen 3 Fast
+        # Fallback 2: Imagen 3 Regular
         image_service = ImageGenerationService(
-            vertex_ai_generator=vertex_ai,
             storage_service=storage
+        )
+
+        # Create Imagen generator for Layout Service (uses Imagen directly, not fallback chain)
+        vertex_ai = VertexAIImageGenerator(
+            project_id=settings.google_cloud_project,
+            location=settings.vertex_ai_location
         )
 
         # Initialize Layout Service components
