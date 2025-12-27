@@ -6,14 +6,22 @@ https://web-production-1b5df.up.railway.app
 ```
 
 ## Overview
-AI-powered image generation API using Google Vertex AI. Supports two generation backends:
+AI-powered image generation API using Google Vertex AI with **resilient fallback chain** and **semantic caching**.
 
-| Generator | Model | Status | Aspect Ratios |
-|-----------|-------|--------|---------------|
-| **Gemini 2.5 Flash Image** | `gemini-2.5-flash-image` | **Default** | 10 native ratios |
-| Imagen 3 | `imagen-3.0-fast-generate-001` | Fallback | 5 native ratios |
+### Generator Fallback Chain
+| Priority | Generator | Model | Retries | Status |
+|----------|-----------|-------|---------|--------|
+| 1 | **Gemini 2.5 Flash Image** | `gemini-2.5-flash-image` | 2 (exp. backoff) | **Primary** |
+| 2 | Imagen 3 Fast | `imagen-3.0-fast-generate-001` | 1 | Fallback 1 |
+| 3 | Imagen 3 Regular | `imagen-3.0-generate-001` | 1 | Fallback 2 |
+| 4 | Semantic Cache | 0.7 similarity threshold | - | Last Resort |
 
-Generates high-quality images with custom aspect ratios, automatic cloud storage, and background removal capabilities.
+### Key Features
+- **Resilient Generation**: Automatic fallback through multiple generators
+- **Semantic Caching**: Two-tier cache (keyword + vector similarity) for hero slides
+- **Retry Logic**: Exponential backoff for transient errors (429, 503)
+- **10 Native Aspect Ratios**: With intelligent cropping for custom ratios
+- **Background Removal**: Automatic transparent PNGs for icons/logos
 
 ---
 
@@ -42,13 +50,18 @@ curl https://web-production-1b5df.up.railway.app/api/v2/health
 ```json
 {
   "status": "healthy",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "services": {
     "vertex_ai": true,
     "supabase": true,
-    "image_service": true
+    "image_service": true,
+    "semantic_cache": true
   },
-  "generator": "gemini",
+  "generator": {
+    "primary": "gemini",
+    "fallbacks": ["imagen-fast", "imagen-regular"],
+    "cache_fallback_threshold": 0.7
+  },
   "timestamp": "2025-12-27T15:21:45.655410"
 }
 ```
@@ -137,6 +150,9 @@ Generate AI images with custom specifications.
     "model": "gemini-2.5-flash-image",
     "platform": "vertex-ai-gemini",
     "generator": "gemini",
+    "generator_used": "gemini",
+    "fallback_used": false,
+    "generators_attempted": ["gemini"],
     "source_aspect_ratio": "16:9",
     "target_aspect_ratio": "16:9",
     "cropped": false,
@@ -162,9 +178,31 @@ Generate AI images with custom specifications.
   "success": false,
   "image_id": null,
   "urls": null,
-  "metadata": {},
-  "error": "Error message here",
+  "metadata": {
+    "generators_attempted": ["gemini", "imagen-fast", "imagen-regular"],
+    "cache_fallback_attempted": true
+  },
+  "error": "All generators failed. Last error: Rate limit exceeded",
   "created_at": "2025-12-27T03:18:00.218676"
+}
+```
+
+**Cache Fallback Response** (when all generators fail but cache has similar image):
+```json
+{
+  "success": true,
+  "image_id": "cached-image-uuid",
+  "urls": {
+    "original": "https://...cached_original.png",
+    "cropped": "https://...cached_cropped.png"
+  },
+  "metadata": {
+    "cache_hit": true,
+    "cache_fallback": true,
+    "similarity": 0.78,
+    "source": "semantic_cache_fallback",
+    "generators_attempted": ["gemini", "imagen-fast", "imagen-regular"]
+  }
 }
 ```
 
@@ -554,6 +592,127 @@ The service automatically selects the image generator based on configuration:
 
 ---
 
+## Resilience & Fallback Chain
+
+The service implements a resilient image generation strategy with automatic fallback and retry logic.
+
+### Fallback Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    IMAGE GENERATION REQUEST                  │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ STEP 1: Check Semantic Cache (0.85 threshold)               │
+│         If HIT → Return cached image immediately            │
+└─────────────────────────────────────────────────────────────┘
+                              │ MISS
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ STEP 2: Try Gemini 2.5 Flash Image (PRIMARY)                │
+│         - 2 retries with exponential backoff (1s, 2s)       │
+│         If SUCCESS → Process & Return                       │
+└─────────────────────────────────────────────────────────────┘
+                              │ FAIL
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ STEP 3: Try Imagen 3 Fast (FALLBACK 1)                      │
+│         - 1 retry with backoff                              │
+│         If SUCCESS → Return with fallback_used: true        │
+└─────────────────────────────────────────────────────────────┘
+                              │ FAIL
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ STEP 4: Try Imagen 3 Regular (FALLBACK 2)                   │
+│         - 1 retry with backoff                              │
+│         If SUCCESS → Return with fallback_used: true        │
+└─────────────────────────────────────────────────────────────┘
+                              │ FAIL
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ STEP 5: Semantic Cache FALLBACK (0.7 threshold)             │
+│         Search for similar images with lower threshold      │
+│         If HIT → Return with cache_fallback: true           │
+└─────────────────────────────────────────────────────────────┘
+                              │ MISS
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ STEP 6: Return Error                                        │
+│         All generators and cache failed                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Retry Logic
+
+The service automatically retries on transient errors:
+- **429** - Rate limit exceeded
+- **503** - Service unavailable
+- **Timeout** - Connection/network issues
+- **Quota exceeded** - API quota errors
+
+Retries use exponential backoff: 1s → 2s → 4s...
+
+### Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ENABLE_GENERATOR_FALLBACK` | `true` | Enable/disable fallback chain |
+| `FALLBACK_SIMILARITY_THRESHOLD` | `0.7` | Cache threshold after gen failure |
+| `MAX_RETRIES` | `2` | Max retries per generator |
+| `RETRY_DELAY_BASE` | `1.0` | Base delay for exponential backoff |
+
+---
+
+## Semantic Caching
+
+The service includes a two-tier semantic cache for hero slide backgrounds, reducing generation costs and improving response times.
+
+### How It Works
+
+**Tier 1: Fast Keyword Search** (< 10ms)
+- Uses PostgreSQL GIN index on topic keywords
+- Counts relevant images matching topics + visual style + slide type
+- Probability-based decision to proceed to Tier 2
+
+**Tier 2: Vector Similarity Search** (~50ms)
+- Uses pgvector for semantic similarity
+- Compares prompt embeddings (pre-computed at cache time)
+- Returns images above similarity threshold
+
+### Cache Behavior
+
+| Scenario | Threshold | Source |
+|----------|-----------|--------|
+| Normal cache check (before generation) | 0.85 | `semantic_cache` |
+| Fallback cache (after all generators fail) | 0.70 | `semantic_cache_fallback` |
+
+### Enabling Cache Hits
+
+For semantic caching to work, include these fields in your request `metadata`:
+
+```json
+{
+  "prompt": "...",
+  "metadata": {
+    "topics": ["technology", "innovation", "startup"],
+    "visual_style": "professional",
+    "slide_type": "title_slide",
+    "domain": "technology"
+  }
+}
+```
+
+| Field | Required | Values |
+|-------|----------|--------|
+| `topics` | Yes | Array of topic keywords |
+| `visual_style` | Yes | `professional`, `illustrated`, `kids` |
+| `slide_type` | Yes | `title_slide`, `section_divider`, `closing_slide` |
+| `domain` | Optional | Content domain (e.g., `technology`, `healthcare`) |
+
+---
+
 ## Response Fields Explained
 
 ### URLs Object
@@ -564,7 +723,13 @@ The service automatically selects the image generator based on configuration:
 ### Metadata Object
 - `model` - AI model used (`gemini-2.5-flash-image` or `imagen-3.0-*`)
 - `platform` - Generation platform (`vertex-ai-gemini` or `vertex-ai`)
-- `generator` - Generator type (`gemini` or `imagen`)
+- `generator` - Generator type (`gemini`, `imagen-fast`, or `imagen-regular`)
+- `generator_used` - Which generator successfully produced the image
+- `fallback_used` - `true` if primary generator failed and fallback was used
+- `generators_attempted` - List of all generators tried (e.g., `["gemini", "imagen-fast"]`)
+- `cache_hit` - `true` if image was served from semantic cache
+- `cache_fallback` - `true` if cache was used after all generators failed
+- `similarity` - Similarity score (0.0-1.0) when cache is used
 - `source_aspect_ratio` - Native generation ratio used
 - `target_aspect_ratio` - Your requested aspect ratio
 - `cropped` - Whether cropping was applied
@@ -698,7 +863,16 @@ https://web-production-1b5df.up.railway.app/docs
 
 ## Changelog
 
-### v2.1.0 (Current - 2025-12-27)
+### v2.2.0 (Current - 2025-12-27)
+- **New**: Resilient fallback chain (Gemini → Imagen Fast → Imagen Regular)
+- **New**: Semantic cache fallback with 0.7 threshold when all generators fail
+- **New**: Automatic retry with exponential backoff for transient errors (429, 503)
+- **New**: Response metadata includes `generator_used`, `fallback_used`, `generators_attempted`
+- **New**: Cache fallback response with `cache_fallback: true` and `similarity` score
+- **New**: Configuration options: `ENABLE_GENERATOR_FALLBACK`, `FALLBACK_SIMILARITY_THRESHOLD`, `MAX_RETRIES`, `RETRY_DELAY_BASE`
+- **Improved**: Much higher reliability through graceful degradation
+
+### v2.1.0 (2025-12-27)
 - **New**: Gemini 2.5 Flash Image as default generator
 - **New**: 10 native aspect ratios (vs 5 with Imagen)
 - **New**: Native 21:9 ultrawide support
@@ -721,4 +895,4 @@ https://web-production-1b5df.up.railway.app/docs
 
 ---
 
-**Built with ❤️ using FastAPI, Vertex AI (Gemini + Imagen), Supabase Storage, and PostgreSQL**
+**Built with ❤️ using FastAPI, Vertex AI (Gemini + Imagen), Supabase Storage, PostgreSQL, and pgvector**
