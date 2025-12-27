@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     enable_transparent_png: bool = True
     enable_custom_aspect_ratios: bool = True
 
+    # Fallback & Retry Configuration
+    enable_generator_fallback: bool = True  # Enable fallback to Imagen if Gemini fails
+    fallback_similarity_threshold: float = 0.7  # Lower threshold for cache fallback
+    max_retries: int = 2  # Max retries per generator
+    retry_delay_base: float = 1.0  # Base delay for exponential backoff (seconds)
+
     # Layout Service Settings
     layout_images_bucket: str = "layout-images"
     default_credits_per_presentation: int = 100

@@ -3,18 +3,21 @@ Image Generation Service - Main Orchestrator
 ============================================
 
 Orchestrates the complete image generation workflow:
-0. Check semantic cache for similar images (NEW - two-tier caching)
+0. Check semantic cache for similar images (two-tier caching)
 1. Select optimal source aspect ratio
-2. Generate image with Vertex AI (Gemini or Imagen)
+2. Generate image with fallback chain (Gemini → Imagen Fast → Imagen Regular)
 3. Crop to target aspect ratio (if needed)
 4. Apply background removal (if requested)
 5. Upload to Supabase Storage
-6. Cache result for future semantic matching (NEW)
-7. Return URLs and metadata
+6. Cache result for future semantic matching
+7. If ALL generators fail, try semantic cache with lower threshold (0.7)
+8. Return URLs and metadata
 
-Supports two image generation backends:
-- Gemini 2.5 Flash Image (default) - via google-genai SDK
-- Imagen 3 (fallback) - via google-cloud-aiplatform SDK
+Supports resilient image generation with fallback chain:
+- Primary: Gemini 2.5 Flash Image - via google-genai SDK
+- Fallback 1: Imagen 3 Fast - via google-cloud-aiplatform SDK
+- Fallback 2: Imagen 3 Regular - via google-cloud-aiplatform SDK
+- Last Resort: Semantic cache with 0.7 similarity threshold
 """
 
 import os
@@ -31,7 +34,7 @@ from ..models.image_models import (
     BatchImageGenerationResponse,
     ImageRecord
 )
-from .vertex_ai_service import VertexAIImageGenerator, remove_white_background, should_remove_background
+from .vertex_ai_service import VertexAIImageGenerator, remove_white_background, should_remove_background, VERTEX_AI_AVAILABLE
 from .aspect_ratio_engine import get_aspect_ratio_strategy, crop_image_to_aspect_ratio
 from .storage_service import SupabaseStorageService
 from .database_service import ImageDatabaseService
@@ -42,6 +45,13 @@ try:
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
+
+# Settings for fallback configuration
+try:
+    from ..config.settings import get_settings
+    SETTINGS_AVAILABLE = True
+except ImportError:
+    SETTINGS_AVAILABLE = False
 
 # Semantic cache imports (optional - graceful degradation if not available)
 try:
@@ -71,7 +81,7 @@ class ImageGenerationService:
         enable_semantic_cache: bool = True
     ):
         """
-        Initialize image generation service.
+        Initialize image generation service with resilient fallback chain.
 
         Args:
             vertex_ai_generator: Vertex AI generator instance (auto-created if None)
@@ -81,34 +91,80 @@ class ImageGenerationService:
             enable_semantic_cache: Whether to use semantic caching (default True)
 
         Environment Variables:
-            IMAGE_GENERATOR: "gemini" (default) or "imagen" - selects image generation backend
+            IMAGE_GENERATOR: "gemini" (default) or "imagen" - selects primary backend
             GEMINI_MODEL: Gemini model to use (default: gemini-2.5-flash-image)
+            ENABLE_GENERATOR_FALLBACK: Enable fallback chain (default: True)
         """
-        # Select image generator based on IMAGE_GENERATOR env var
-        image_generator_type = os.getenv("IMAGE_GENERATOR", "gemini").lower()
+        # Load settings for fallback configuration
+        self.settings = get_settings() if SETTINGS_AVAILABLE else None
+        self.enable_fallback = (
+            self.settings.enable_generator_fallback if self.settings else True
+        )
+        self.max_retries = self.settings.max_retries if self.settings else 2
+        self.retry_delay_base = self.settings.retry_delay_base if self.settings else 1.0
+        self.fallback_similarity_threshold = (
+            self.settings.fallback_similarity_threshold if self.settings else 0.7
+        )
+
+        # Initialize PRIMARY generator
+        self.primary_generator = None
+        self.primary_generator_type = None
+
+        # Initialize FALLBACK generators list
+        self.fallback_generators: List[Dict[str, Any]] = []
 
         if vertex_ai_generator:
             # Use provided generator (for testing/custom config)
-            self.vertex_ai = vertex_ai_generator
-            self.generator_type = "custom"
-        elif image_generator_type == "gemini" and GEMINI_AVAILABLE:
-            # Default: Use Gemini 2.5 Flash Image
-            try:
-                self.vertex_ai = GeminiImageGenerator()
-                self.generator_type = "gemini"
-                logger.info("Using Gemini 2.5 Flash Image generator")
-            except Exception as e:
-                logger.warning(f"Gemini initialization failed, falling back to Imagen: {e}")
-                self.vertex_ai = VertexAIImageGenerator()
-                self.generator_type = "imagen"
+            self.primary_generator = vertex_ai_generator
+            self.primary_generator_type = "custom"
         else:
-            # Fallback: Use Imagen 3
-            self.vertex_ai = VertexAIImageGenerator()
-            self.generator_type = "imagen"
-            if image_generator_type == "gemini" and not GEMINI_AVAILABLE:
-                logger.warning("Gemini not available (google-genai not installed), using Imagen")
-            else:
-                logger.info("Using Imagen 3 generator")
+            # Try to initialize Gemini as primary
+            if GEMINI_AVAILABLE:
+                try:
+                    self.primary_generator = GeminiImageGenerator()
+                    self.primary_generator_type = "gemini"
+                    logger.info("Primary generator: Gemini 2.5 Flash Image")
+                except Exception as e:
+                    logger.warning(f"Gemini initialization failed: {e}")
+
+            # Initialize Imagen generators as fallbacks (if available)
+            if VERTEX_AI_AVAILABLE and self.enable_fallback:
+                try:
+                    # Imagen 3 Fast (fallback 1)
+                    imagen_fast = VertexAIImageGenerator(
+                        default_model="imagen-3.0-fast-generate-001"
+                    )
+                    self.fallback_generators.append({
+                        "generator": imagen_fast,
+                        "model": "imagen-3.0-fast-generate-001",
+                        "name": "imagen-fast"
+                    })
+                    logger.info("Fallback 1: Imagen 3 Fast initialized")
+
+                    # Imagen 3 Regular (fallback 2)
+                    imagen_regular = VertexAIImageGenerator(
+                        default_model="imagen-3.0-generate-001"
+                    )
+                    self.fallback_generators.append({
+                        "generator": imagen_regular,
+                        "model": "imagen-3.0-generate-001",
+                        "name": "imagen-regular"
+                    })
+                    logger.info("Fallback 2: Imagen 3 Regular initialized")
+
+                except Exception as e:
+                    logger.warning(f"Imagen fallback initialization failed: {e}")
+
+        # If no primary, use first fallback as primary
+        if not self.primary_generator and self.fallback_generators:
+            first_fallback = self.fallback_generators.pop(0)
+            self.primary_generator = first_fallback["generator"]
+            self.primary_generator_type = first_fallback["name"]
+            logger.info(f"Using {first_fallback['name']} as primary (Gemini unavailable)")
+
+        # Legacy compatibility: expose as self.vertex_ai
+        self.vertex_ai = self.primary_generator
+        self.generator_type = self.primary_generator_type or "unknown"
 
         self.storage = storage_service or SupabaseStorageService()
         self.database = database_service or ImageDatabaseService()
@@ -125,9 +181,13 @@ class ImageGenerationService:
                 logger.warning(f"Semantic cache not available: {e}")
                 self.semantic_cache_enabled = False
 
+        # Log configuration
+        fallback_info = ", ".join([f["name"] for f in self.fallback_generators]) if self.fallback_generators else "none"
         logger.info(
             f"Initialized Image Generation Service "
-            f"(generator: {self.generator_type}, "
+            f"(primary: {self.primary_generator_type}, "
+            f"fallbacks: [{fallback_info}], "
+            f"cache_fallback_threshold: {self.fallback_similarity_threshold}, "
             f"semantic_cache: {'enabled' if self.semantic_cache_enabled else 'disabled'})"
         )
 
@@ -184,19 +244,52 @@ class ImageGenerationService:
 
             logger.info(f"Aspect ratio strategy: {strategy['strategy']}")
 
-            # Step 2: Generate image with Vertex AI
-            generation_result = await self.vertex_ai.generate_image(
+            # Step 2: Generate image with fallback chain
+            generation_result = await self._generate_with_fallback(
                 prompt=request.prompt,
                 aspect_ratio=source_ratio,
                 negative_prompt=request.negative_prompt,
-                model_name=request.model
+                model=request.model
             )
 
             if not generation_result["success"]:
+                # ALL generators failed - try cache fallback with lower threshold
+                cache_fallback = await self._try_cache_fallback(request)
+                if cache_fallback:
+                    generation_time_ms = int((time.time() - start_time) * 1000)
+                    logger.info(
+                        f"Cache FALLBACK hit in {generation_time_ms}ms "
+                        f"(similarity: {cache_fallback.get('similarity', 0):.3f}, "
+                        f"generators_attempted: {generation_result.get('generators_attempted', [])})"
+                    )
+                    return ImageGenerationResponse(
+                        success=True,
+                        image_id=cache_fallback.get("cache_id", image_id),
+                        urls={
+                            "original": cache_fallback["image_url"],
+                            "cropped": cache_fallback.get("cropped_url")
+                        },
+                        metadata={
+                            "cache_hit": True,
+                            "cache_fallback": True,
+                            "similarity": cache_fallback.get("similarity", 0),
+                            "generation_time_ms": generation_time_ms,
+                            "prompt": request.prompt,
+                            "archetype": request.archetype,
+                            "source": "semantic_cache_fallback",
+                            "generators_attempted": generation_result.get("generators_attempted", [])
+                        }
+                    )
+
+                # Final failure - all generators and cache failed
                 return ImageGenerationResponse(
                     success=False,
                     image_id=image_id,
-                    error=generation_result["error"]
+                    error=generation_result["error"],
+                    metadata={
+                        "generators_attempted": generation_result.get("generators_attempted", []),
+                        "cache_fallback_attempted": True
+                    }
                 )
 
             original_bytes = generation_result["image_bytes"]
@@ -266,7 +359,10 @@ class ImageGenerationService:
             metadata = {
                 "model": generation_result["metadata"].get("model", request.model),
                 "platform": generation_result["metadata"].get("platform", "vertex-ai"),
-                "generator": self.generator_type,
+                "generator": generation_result.get("generator_used", self.generator_type),
+                "generator_used": generation_result.get("generator_used", self.generator_type),
+                "fallback_used": generation_result.get("fallback_used", False),
+                "generators_attempted": generation_result.get("generators_attempted", []),
                 "source_aspect_ratio": source_ratio,
                 "target_aspect_ratio": request.aspect_ratio,
                 "cropped": requires_crop,
@@ -550,6 +646,235 @@ class ImageGenerationService:
 
         except Exception as e:
             logger.warning(f"Semantic cache storage failed (non-fatal): {e}")
+
+    # ==========================================
+    # FALLBACK CHAIN HELPER METHODS
+    # ==========================================
+
+    async def _generate_with_fallback(
+        self,
+        prompt: str,
+        aspect_ratio: str,
+        negative_prompt: Optional[str],
+        model: Optional[str]
+    ) -> Dict[str, Any]:
+        """
+        Try generators in order: Primary → Fallback 1 → Fallback 2.
+
+        Args:
+            prompt: Image generation prompt
+            aspect_ratio: Target aspect ratio
+            negative_prompt: Negative prompt (optional)
+            model: Model override (optional)
+
+        Returns:
+            Dict with success, image_bytes, metadata, generator_used, fallback_used
+        """
+        attempted = []
+        last_error = None
+
+        # Step 1: Try primary generator with retries
+        if self.primary_generator:
+            result = await self._try_generator_with_retry(
+                generator=self.primary_generator,
+                generator_name=self.primary_generator_type,
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                negative_prompt=negative_prompt,
+                max_retries=self.max_retries
+            )
+            attempted.append(self.primary_generator_type)
+
+            if result["success"]:
+                result["generator_used"] = self.primary_generator_type
+                result["fallback_used"] = False
+                result["generators_attempted"] = attempted
+                return result
+
+            last_error = result.get("error")
+            logger.warning(f"Primary generator ({self.primary_generator_type}) failed: {last_error}")
+
+        # Step 2: Try fallback generators
+        if self.enable_fallback:
+            for fallback in self.fallback_generators:
+                result = await self._try_generator_with_retry(
+                    generator=fallback["generator"],
+                    generator_name=fallback["name"],
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                    negative_prompt=negative_prompt,
+                    model_override=fallback["model"],
+                    max_retries=1  # Fewer retries for fallbacks
+                )
+                attempted.append(fallback["name"])
+
+                if result["success"]:
+                    result["generator_used"] = fallback["name"]
+                    result["fallback_used"] = True
+                    result["generators_attempted"] = attempted
+                    logger.info(f"Fallback generator ({fallback['name']}) succeeded")
+                    return result
+
+                last_error = result.get("error")
+                logger.warning(f"Fallback generator ({fallback['name']}) failed: {last_error}")
+
+        # Step 3: All generators failed
+        return {
+            "success": False,
+            "error": f"All generators failed. Last error: {last_error}",
+            "generators_attempted": attempted,
+            "fallback_used": False
+        }
+
+    async def _try_generator_with_retry(
+        self,
+        generator,
+        generator_name: str,
+        prompt: str,
+        aspect_ratio: str,
+        negative_prompt: Optional[str],
+        model_override: Optional[str] = None,
+        max_retries: int = 2
+    ) -> Dict[str, Any]:
+        """
+        Try generator with exponential backoff retries.
+
+        Args:
+            generator: Generator instance (Gemini or Imagen)
+            generator_name: Name for logging
+            prompt: Image prompt
+            aspect_ratio: Target aspect ratio
+            negative_prompt: Negative prompt (optional)
+            model_override: Override model name (optional)
+            max_retries: Maximum retry attempts
+
+        Returns:
+            Dict with success, image_bytes/error, metadata
+        """
+        last_error = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                result = await generator.generate_image(
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                    negative_prompt=negative_prompt,
+                    model_name=model_override
+                )
+
+                if result["success"]:
+                    return result
+
+                last_error = result.get("error", "Unknown error")
+
+                # Check if error is retryable
+                if not self._is_retryable_error(last_error):
+                    logger.info(f"Non-retryable error from {generator_name}: {last_error}")
+                    break
+
+            except Exception as e:
+                last_error = str(e)
+
+            # Wait before retry (exponential backoff)
+            if attempt < max_retries:
+                delay = (2 ** attempt) * self.retry_delay_base
+                logger.info(
+                    f"Retry {attempt + 1}/{max_retries} for {generator_name} in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+
+        return {"success": False, "error": last_error}
+
+    def _is_retryable_error(self, error: str) -> bool:
+        """
+        Check if error is transient and worth retrying.
+
+        Args:
+            error: Error message string
+
+        Returns:
+            True if error is retryable (rate limit, timeout, etc.)
+        """
+        retryable_patterns = [
+            "429", "rate limit", "quota", "exceeded",
+            "503", "service unavailable", "unavailable",
+            "timeout", "timed out",
+            "connection", "network",
+            "temporarily", "try again",
+            "overloaded", "capacity"
+        ]
+        error_lower = error.lower()
+        return any(pattern in error_lower for pattern in retryable_patterns)
+
+    async def _try_cache_fallback(
+        self,
+        request: ImageGenerationRequest
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Try semantic cache with lower threshold as last resort.
+
+        This is called when ALL generators have failed.
+        Uses a lower similarity threshold (0.7 vs 0.85) to increase
+        chances of finding a usable cached image.
+
+        Args:
+            request: Original image generation request
+
+        Returns:
+            Dict with image_url, cropped_url, similarity if found, None otherwise
+        """
+        if not self.semantic_cache_enabled or not self.semantic_cache:
+            return None
+
+        # Extract cache-required metadata
+        metadata = request.metadata or {}
+        topics = metadata.get("topics", [])
+        visual_style = metadata.get("visual_style")
+        slide_type = metadata.get("slide_type")
+
+        # Skip if required metadata is missing
+        if not topics or not visual_style or not slide_type:
+            logger.debug("Cache fallback: missing required metadata")
+            return None
+
+        try:
+            logger.info(
+                f"Attempting cache fallback with threshold {self.fallback_similarity_threshold}"
+            )
+
+            # Use find_similar_image directly with lower threshold
+            # (bypasses probability curve from Tier 1)
+            cached = await self.semantic_cache.find_similar_image(
+                prompt=request.prompt,
+                topics=topics,
+                visual_style=visual_style,
+                slide_type=slide_type,
+                threshold=self.fallback_similarity_threshold
+            )
+
+            if cached:
+                # Record the cache hit
+                await self.semantic_cache.record_hit(cached.id)
+
+                logger.info(
+                    f"Cache fallback HIT: similarity={cached.similarity:.3f} "
+                    f"(threshold={self.fallback_similarity_threshold})"
+                )
+
+                return {
+                    "cache_id": cached.id,
+                    "image_url": cached.image_url,
+                    "cropped_url": cached.cropped_url,
+                    "similarity": cached.similarity,
+                    "hit_count": cached.hit_count
+                }
+
+            logger.info("Cache fallback: no similar image found")
+            return None
+
+        except Exception as e:
+            logger.warning(f"Cache fallback failed: {e}")
+            return None
 
 
 # For testing
