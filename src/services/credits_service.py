@@ -274,7 +274,7 @@ class CreditsService:
         width: Optional[int] = None,
         height: Optional[int] = None,
         generation_time_ms: Optional[int] = None,
-        model: str = "imagen-3.0-fast-generate",
+        model: str = "imagen-3.0-fast-generate-001",
         provider: str = "vertex-ai",
         status: str = "completed",
         error_code: Optional[str] = None,

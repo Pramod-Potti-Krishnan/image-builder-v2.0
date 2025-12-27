@@ -218,7 +218,7 @@ class LayoutGenerationService:
                 )
 
             image_bytes = generation_result["image_bytes"]
-            model_used = generation_result.get("metadata", {}).get("model", "imagen-3.0-fast-generate")
+            model_used = generation_result.get("metadata", {}).get("model", "imagen-3.0-fast-generate-001")
 
             logger.info(f"Image generated successfully ({len(image_bytes)} bytes)")
 

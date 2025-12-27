@@ -69,7 +69,7 @@ class TestAPI:
             success=True,
             image_id="test-id-123",
             urls={"original": "https://example.com/image.png"},
-            metadata={"model": "imagen-3.0-generate"}
+            metadata={"model": "imagen-3.0-generate-002"}
         )
 
         response = client.post(

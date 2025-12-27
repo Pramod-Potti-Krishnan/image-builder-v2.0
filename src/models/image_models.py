@@ -15,34 +15,34 @@ from enum import Enum
 class ImagenModel(str, Enum):
     """Available Imagen model versions."""
     # Imagen 4.0 Series (Latest)
-    IMAGEN_4_ULTRA = "imagen-4.0-ultra-generate"
-    IMAGEN_4_STANDARD = "imagen-4.0-generate"
-    IMAGEN_4_FAST = "imagen-4.0-fast-generate"
+    IMAGEN_4_ULTRA = "imagen-4.0-ultra-generate-001"
+    IMAGEN_4_STANDARD = "imagen-4.0-generate-001"
+    IMAGEN_4_FAST = "imagen-4.0-fast-generate-001"
 
     # Imagen 3.0 Series (Stable)
-    IMAGEN_3_STANDARD = "imagen-3.0-generate"
-    IMAGEN_3_FAST = "imagen-3.0-fast-generate"
+    IMAGEN_3_STANDARD = "imagen-3.0-generate-002"
+    IMAGEN_3_FAST = "imagen-3.0-fast-generate-001"
 
     @property
     def display_name(self) -> str:
         """Get human-readable name."""
         return {
-            "imagen-4.0-ultra-generate": "Imagen 4.0 Ultra (Highest Quality)",
-            "imagen-4.0-generate": "Imagen 4.0 Standard",
-            "imagen-4.0-fast-generate": "Imagen 4.0 Fast",
-            "imagen-3.0-generate": "Imagen 3.0 Standard (Stable)",
-            "imagen-3.0-fast-generate": "Imagen 3.0 Fast (Default)",
+            "imagen-4.0-ultra-generate-001": "Imagen 4.0 Ultra (Highest Quality)",
+            "imagen-4.0-generate-001": "Imagen 4.0 Standard",
+            "imagen-4.0-fast-generate-001": "Imagen 4.0 Fast",
+            "imagen-3.0-generate-002": "Imagen 3.0 Standard (Stable)",
+            "imagen-3.0-fast-generate-001": "Imagen 3.0 Fast (Default)",
         }.get(self.value, self.value)
 
     @property
     def cost_per_image(self) -> float:
         """Get approximate cost per image."""
         return {
-            "imagen-4.0-ultra-generate": 0.08,
-            "imagen-4.0-generate": 0.06,
-            "imagen-4.0-fast-generate": 0.03,
-            "imagen-3.0-generate": 0.04,
-            "imagen-3.0-fast-generate": 0.02,
+            "imagen-4.0-ultra-generate-001": 0.08,
+            "imagen-4.0-generate-001": 0.06,
+            "imagen-4.0-fast-generate-001": 0.03,
+            "imagen-3.0-generate-002": 0.04,
+            "imagen-3.0-fast-generate-001": 0.02,
         }.get(self.value, 0.04)
 
     @property
@@ -87,7 +87,7 @@ class ImageGenerationRequest(BaseModel):
 
     # Model selection
     model: Optional[str] = Field(
-        default="imagen-3.0-fast-generate",
+        default="imagen-3.0-fast-generate-001",
         description="Imagen model to use (fast/standard/ultra). Default: fast for cost efficiency"
     )
 
@@ -183,7 +183,7 @@ class ImageRecord(BaseModel):
     crop_anchor: str = "center"
 
     # Metadata
-    model: str = "imagen-3.0-generate"
+    model: str = "imagen-3.0-generate-002"
     platform: str = "vertex-ai"
     generation_time_ms: Optional[int] = None
     file_sizes: Dict[str, int] = Field(default_factory=dict)

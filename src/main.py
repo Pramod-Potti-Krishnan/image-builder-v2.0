@@ -252,7 +252,7 @@ async def generate_image(request: ImageGenerationRequest):
         "transparent": "https://..."
       },
       "metadata": {
-        "model": "imagen-3.0-generate",
+        "model": "imagen-3.0-generate-002",
         "generation_time_ms": 8500,
         ...
       }
@@ -300,12 +300,12 @@ async def generate_images_batch(batch_request: BatchImageGenerationRequest):
         {
           "prompt": "A beautiful sunset",
           "aspect_ratio": "16:9",
-          "model": "imagen-3.0-fast-generate"
+          "model": "imagen-3.0-fast-generate-001"
         },
         {
           "prompt": "A mountain landscape",
           "aspect_ratio": "1:1",
-          "model": "imagen-3.0-generate"
+          "model": "imagen-3.0-generate-002"
         }
       ],
       "max_concurrent": 5
@@ -349,7 +349,7 @@ async def list_available_models():
     {
       "models": [
         {
-          "name": "imagen-3.0-fast-generate",
+          "name": "imagen-3.0-fast-generate-001",
           "display_name": "Imagen 3.0 Fast (Default)",
           "cost_per_image": 0.02,
           "speed": "Fast (3-5s)",
@@ -443,7 +443,7 @@ async def generate_layout_image(request: LayoutImageGenerateRequest):
           "aspectRatio": "16:9",
           "dimensions": {"width": 1536, "height": 864},
           "provider": "vertex-ai",
-          "model": "imagen-3.0-fast-generate",
+          "model": "imagen-3.0-fast-generate-001",
           "generationTime": 4523
         },
         "usage": {
