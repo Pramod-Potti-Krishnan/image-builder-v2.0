@@ -41,7 +41,7 @@ class VertexAIImageGenerator:
         Args:
             project_id: Google Cloud project ID (defaults to GOOGLE_CLOUD_PROJECT env var)
             location: Vertex AI location (defaults to VERTEX_AI_LOCATION env var or us-central1)
-            default_model: Default Imagen model to use (defaults to imagen-3.0-fast-generate-001)
+            default_model: Default Imagen model to use (defaults to imagen-3.0-fast-generate)
         """
         if not VERTEX_AI_AVAILABLE:
             raise ImportError("google-cloud-aiplatform not installed. Run: pip install google-cloud-aiplatform")
@@ -51,7 +51,7 @@ class VertexAIImageGenerator:
             raise ValueError("GOOGLE_CLOUD_PROJECT must be set (env var or constructor)")
 
         self.location = location or os.getenv("VERTEX_AI_LOCATION", "us-central1")
-        self.default_model = default_model or os.getenv("DEFAULT_IMAGEN_MODEL", "imagen-3.0-fast-generate-001")
+        self.default_model = default_model or os.getenv("DEFAULT_IMAGEN_MODEL", "imagen-3.0-fast-generate")
         self.models_cache = {}  # Cache loaded models
 
         # Handle base64-encoded credentials (for Railway/cloud deployments)
@@ -93,7 +93,7 @@ class VertexAIImageGenerator:
         Get or load an Imagen model (with caching).
 
         Args:
-            model_name: Model identifier (e.g., "imagen-3.0-fast-generate-001")
+            model_name: Model identifier (e.g., "imagen-3.0-fast-generate")
 
         Returns:
             ImageGenerationModel instance

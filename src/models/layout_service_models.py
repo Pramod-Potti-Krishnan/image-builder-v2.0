@@ -246,7 +246,7 @@ class LayoutImageGenerateResponse(BaseModel):
                 "aspectRatio": "3:2",
                 "dimensions": {"width": 1536, "height": 1024},
                 "provider": "vertex-ai",
-                "model": "imagen-3.0-fast-generate-001",
+                "model": "imagen-3.0-fast-generate",
                 "generationTime": 4523
             },
             "usage": {
