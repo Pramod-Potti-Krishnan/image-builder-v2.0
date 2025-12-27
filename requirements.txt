@@ -11,7 +11,7 @@ google-genai>=1.56.0  # Gemini 2.5 Flash Image (default)
 # Supabase (storage and database)
 # Pin to 2.10.0 - newer versions have breaking API changes with PostgREST client
 supabase==2.10.0
-postgrest==0.17.0
+postgrest==0.18.0
 
 # Image Processing
 Pillow>=10.0.0,<11.0.0
