@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     vertex_ai_location: str = "us-central1"
     google_application_credentials: Optional[str] = None
 
+    # Image Generator Selection
+    image_generator: str = "gemini"  # "gemini" (default) or "imagen"
+    gemini_model: str = "gemini-2.5-flash-image"  # Gemini model for image generation
+
     # Supabase
     supabase_url: str
     supabase_key: str

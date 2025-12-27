@@ -3,14 +3,21 @@ Image Generation Service - Main Orchestrator
 ============================================
 
 Orchestrates the complete image generation workflow:
+0. Check semantic cache for similar images (NEW - two-tier caching)
 1. Select optimal source aspect ratio
-2. Generate image with Vertex AI
+2. Generate image with Vertex AI (Gemini or Imagen)
 3. Crop to target aspect ratio (if needed)
 4. Apply background removal (if requested)
 5. Upload to Supabase Storage
-6. Return URLs and metadata
+6. Cache result for future semantic matching (NEW)
+7. Return URLs and metadata
+
+Supports two image generation backends:
+- Gemini 2.5 Flash Image (default) - via google-genai SDK
+- Imagen 3 (fallback) - via google-cloud-aiplatform SDK
 """
 
+import os
 import logging
 import time
 import asyncio
@@ -29,19 +36,39 @@ from .aspect_ratio_engine import get_aspect_ratio_strategy, crop_image_to_aspect
 from .storage_service import SupabaseStorageService
 from .database_service import ImageDatabaseService
 
+# Gemini Image Generator (optional - graceful fallback to Imagen)
+try:
+    from .gemini_image_service import GeminiImageGenerator
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+
+# Semantic cache imports (optional - graceful degradation if not available)
+try:
+    from .semantic_cache_service import SemanticImageCacheService, get_semantic_cache_service
+    SEMANTIC_CACHE_AVAILABLE = True
+except ImportError:
+    SEMANTIC_CACHE_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
 class ImageGenerationService:
     """
     Main service orchestrating the complete image generation workflow.
+
+    Includes two-tier semantic caching for hero slide backgrounds:
+    - TIER 1: Fast keyword matching (< 10ms)
+    - TIER 2: Semantic vector similarity (~50ms)
     """
 
     def __init__(
         self,
         vertex_ai_generator: Optional[VertexAIImageGenerator] = None,
         storage_service: Optional[SupabaseStorageService] = None,
-        database_service: Optional[ImageDatabaseService] = None
+        database_service: Optional[ImageDatabaseService] = None,
+        semantic_cache_service: Optional["SemanticImageCacheService"] = None,
+        enable_semantic_cache: bool = True
     ):
         """
         Initialize image generation service.
@@ -50,16 +77,66 @@ class ImageGenerationService:
             vertex_ai_generator: Vertex AI generator instance (auto-created if None)
             storage_service: Supabase storage service (auto-created if None)
             database_service: Database service for metadata (auto-created if None)
+            semantic_cache_service: Semantic cache for hero slides (auto-created if None)
+            enable_semantic_cache: Whether to use semantic caching (default True)
+
+        Environment Variables:
+            IMAGE_GENERATOR: "gemini" (default) or "imagen" - selects image generation backend
+            GEMINI_MODEL: Gemini model to use (default: gemini-2.5-flash-image)
         """
-        self.vertex_ai = vertex_ai_generator or VertexAIImageGenerator()
+        # Select image generator based on IMAGE_GENERATOR env var
+        image_generator_type = os.getenv("IMAGE_GENERATOR", "gemini").lower()
+
+        if vertex_ai_generator:
+            # Use provided generator (for testing/custom config)
+            self.vertex_ai = vertex_ai_generator
+            self.generator_type = "custom"
+        elif image_generator_type == "gemini" and GEMINI_AVAILABLE:
+            # Default: Use Gemini 2.5 Flash Image
+            try:
+                self.vertex_ai = GeminiImageGenerator()
+                self.generator_type = "gemini"
+                logger.info("Using Gemini 2.5 Flash Image generator")
+            except Exception as e:
+                logger.warning(f"Gemini initialization failed, falling back to Imagen: {e}")
+                self.vertex_ai = VertexAIImageGenerator()
+                self.generator_type = "imagen"
+        else:
+            # Fallback: Use Imagen 3
+            self.vertex_ai = VertexAIImageGenerator()
+            self.generator_type = "imagen"
+            if image_generator_type == "gemini" and not GEMINI_AVAILABLE:
+                logger.warning("Gemini not available (google-genai not installed), using Imagen")
+            else:
+                logger.info("Using Imagen 3 generator")
+
         self.storage = storage_service or SupabaseStorageService()
         self.database = database_service or ImageDatabaseService()
 
-        logger.info("Initialized Image Generation Service")
+        # Initialize semantic cache (optional - graceful degradation)
+        self.semantic_cache = None
+        self.semantic_cache_enabled = enable_semantic_cache and SEMANTIC_CACHE_AVAILABLE
+
+        if self.semantic_cache_enabled:
+            try:
+                self.semantic_cache = semantic_cache_service or get_semantic_cache_service()
+                logger.info("Semantic image cache enabled")
+            except Exception as e:
+                logger.warning(f"Semantic cache not available: {e}")
+                self.semantic_cache_enabled = False
+
+        logger.info(
+            f"Initialized Image Generation Service "
+            f"(generator: {self.generator_type}, "
+            f"semantic_cache: {'enabled' if self.semantic_cache_enabled else 'disabled'})"
+        )
 
     async def generate(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
         """
         Generate image according to request specifications.
+
+        Includes semantic cache check for hero slide backgrounds.
+        Cache lookup requires metadata with: topics, visual_style, slide_type, domain
 
         Args:
             request: Image generation request
@@ -73,6 +150,32 @@ class ImageGenerationService:
         try:
             logger.info(f"Starting image generation (ID: {image_id})")
             logger.info(f"Request: aspect_ratio={request.aspect_ratio}, archetype={request.archetype}")
+
+            # Step 0: Check semantic cache (for hero slides with proper metadata)
+            cache_result = await self._check_semantic_cache(request)
+            if cache_result:
+                # Cache HIT - return cached image
+                generation_time_ms = int((time.time() - start_time) * 1000)
+                logger.info(
+                    f"Semantic cache HIT in {generation_time_ms}ms "
+                    f"(similarity: {cache_result.get('similarity', 0):.3f})"
+                )
+                return ImageGenerationResponse(
+                    success=True,
+                    image_id=cache_result.get("cache_id", image_id),
+                    urls={
+                        "original": cache_result["image_url"],
+                        "cropped": cache_result.get("cropped_url")
+                    },
+                    metadata={
+                        "cache_hit": True,
+                        "similarity": cache_result.get("similarity", 0),
+                        "generation_time_ms": generation_time_ms,
+                        "prompt": request.prompt,
+                        "archetype": request.archetype,
+                        "source": "semantic_cache"
+                    }
+                )
 
             # Step 1: Determine aspect ratio strategy
             strategy = get_aspect_ratio_strategy(request.aspect_ratio)
@@ -162,7 +265,8 @@ class ImageGenerationService:
 
             metadata = {
                 "model": generation_result["metadata"].get("model", request.model),
-                "platform": "vertex-ai",
+                "platform": generation_result["metadata"].get("platform", "vertex-ai"),
+                "generator": self.generator_type,
                 "source_aspect_ratio": source_ratio,
                 "target_aspect_ratio": request.aspect_ratio,
                 "cropped": requires_crop,
@@ -225,6 +329,14 @@ class ImageGenerationService:
                         logger.warning(f"Failed to save to database: {db_result.get('error')}")
                 except Exception as e:
                     logger.error(f"Database save error (non-fatal): {e}")
+
+                # Step 8: Store in semantic cache (for hero slides with metadata)
+                await self._store_in_semantic_cache(
+                    request=request,
+                    urls=urls,
+                    generation_time_ms=generation_time_ms,
+                    model_used=generation_result["metadata"].get("model", request.model)
+                )
 
             logger.info(f"Image generation completed in {generation_time_ms}ms")
 
@@ -308,6 +420,136 @@ class ImageGenerationService:
             results=results,
             batch_id=batch_id
         )
+
+    # ==========================================
+    # SEMANTIC CACHE HELPER METHODS
+    # ==========================================
+
+    async def _check_semantic_cache(
+        self,
+        request: ImageGenerationRequest
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check semantic cache for similar image.
+
+        Cache lookup requires metadata with:
+        - topics: List of topic keywords
+        - visual_style: Visual style (professional, illustrated, kids)
+        - slide_type: Slide type (title_slide, section_divider, closing_slide)
+
+        Args:
+            request: Image generation request
+
+        Returns:
+            Dict with image_url, cropped_url, similarity if cache hit, None otherwise
+        """
+        if not self.semantic_cache_enabled or not self.semantic_cache:
+            return None
+
+        # Extract cache-required metadata
+        metadata = request.metadata or {}
+        topics = metadata.get("topics", [])
+        visual_style = metadata.get("visual_style")
+        slide_type = metadata.get("slide_type")
+
+        # Skip cache if required metadata is missing
+        if not topics or not visual_style or not slide_type:
+            logger.debug(
+                f"Skipping cache check: missing metadata "
+                f"(topics={bool(topics)}, style={bool(visual_style)}, type={bool(slide_type)})"
+            )
+            return None
+
+        try:
+            # Perform two-tier cache lookup
+            cached = await self.semantic_cache.check_cache(
+                prompt=request.prompt,
+                topics=topics,
+                visual_style=visual_style,
+                slide_type=slide_type
+            )
+
+            if cached:
+                return {
+                    "cache_id": cached.id,
+                    "image_url": cached.image_url,
+                    "cropped_url": cached.cropped_url,
+                    "similarity": cached.similarity,
+                    "hit_count": cached.hit_count
+                }
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Semantic cache check failed (non-fatal): {e}")
+            return None
+
+    async def _store_in_semantic_cache(
+        self,
+        request: ImageGenerationRequest,
+        urls: Dict[str, str],
+        generation_time_ms: int,
+        model_used: str
+    ) -> None:
+        """
+        Store generated image in semantic cache for future reuse.
+
+        Only stores if required metadata is present:
+        - topics: Topic keywords
+        - visual_style: Visual style used
+        - slide_type: Type of hero slide
+        - domain: Content domain
+
+        Args:
+            request: Original generation request
+            urls: Generated image URLs
+            generation_time_ms: Generation time in ms
+            model_used: Imagen model used
+        """
+        if not self.semantic_cache_enabled or not self.semantic_cache:
+            return
+
+        # Extract cache-required metadata
+        metadata = request.metadata or {}
+        topics = metadata.get("topics", [])
+        visual_style = metadata.get("visual_style")
+        slide_type = metadata.get("slide_type")
+        domain = metadata.get("domain", "default")
+
+        # Skip caching if required metadata is missing
+        if not topics or not visual_style or not slide_type:
+            logger.debug(
+                f"Skipping cache storage: missing metadata "
+                f"(topics={bool(topics)}, style={bool(visual_style)}, type={bool(slide_type)})"
+            )
+            return
+
+        try:
+            cache_id = await self.semantic_cache.cache_image(
+                prompt=request.prompt,
+                topics=topics,
+                domain=domain,
+                visual_style=visual_style,
+                slide_type=slide_type,
+                image_url=urls.get("original", ""),
+                cropped_url=urls.get("cropped"),
+                model_used=model_used,
+                generation_time_ms=generation_time_ms,
+                archetype=request.archetype,
+                metadata={
+                    "aspect_ratio": request.aspect_ratio,
+                    "negative_prompt": request.negative_prompt
+                }
+            )
+
+            if cache_id:
+                logger.info(
+                    f"Cached image for future semantic matching: "
+                    f"topics={topics}, style={visual_style}, type={slide_type}"
+                )
+
+        except Exception as e:
+            logger.warning(f"Semantic cache storage failed (non-fatal): {e}")
 
 
 # For testing

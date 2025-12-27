@@ -5,7 +5,8 @@ pydantic>=2.0.0,<3.0.0
 pydantic-settings>=2.0.0,<3.0.0
 
 # Google Cloud Vertex AI (image generation)
-google-cloud-aiplatform>=1.40.0,<2.0.0
+google-cloud-aiplatform>=1.40.0,<2.0.0  # Imagen 3 (fallback)
+google-genai>=1.56.0  # Gemini 2.5 Flash Image (default)
 
 # Supabase (storage and database)
 supabase>=2.0.0,<3.0.0

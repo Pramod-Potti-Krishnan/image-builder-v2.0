@@ -6,11 +6,16 @@ Handles intelligent selection of source aspect ratios and cropping
 to achieve custom target aspect ratios.
 
 Strategy:
-1. Select best Imagen-supported ratio (1:1, 3:4, 4:3, 9:16, 16:9)
+1. Select best supported ratio based on generator (Gemini or Imagen)
 2. Generate image at that ratio
-3. Intelligently crop to target custom ratio
+3. Intelligently crop to target custom ratio (if needed)
+
+Supported Ratios:
+- Imagen 3:  1:1, 3:4, 4:3, 9:16, 16:9 (5 ratios)
+- Gemini:    1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9 (10 ratios)
 """
 
+import os
 import logging
 from typing import Tuple, Literal
 from io import BytesIO
@@ -18,7 +23,7 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# Imagen 3 supported aspect ratios
+# Imagen 3 supported aspect ratios (5 ratios)
 IMAGEN_SUPPORTED_RATIOS = {
     "1:1": (1, 1),
     "3:4": (3, 4),
@@ -26,6 +31,33 @@ IMAGEN_SUPPORTED_RATIOS = {
     "9:16": (9, 16),
     "16:9": (16, 9)
 }
+
+# Gemini 2.5 Flash Image supported aspect ratios (10 ratios)
+GEMINI_SUPPORTED_RATIOS = {
+    "1:1": (1, 1),
+    "2:3": (2, 3),
+    "3:2": (3, 2),
+    "3:4": (3, 4),
+    "4:3": (4, 3),
+    "4:5": (4, 5),
+    "5:4": (5, 4),
+    "9:16": (9, 16),
+    "16:9": (16, 9),
+    "21:9": (21, 9)
+}
+
+
+def get_supported_ratios() -> dict:
+    """
+    Get supported ratios based on configured image generator.
+
+    Uses IMAGE_GENERATOR env var to determine which set of ratios to use.
+    Defaults to Gemini ratios (larger set).
+    """
+    generator = os.getenv("IMAGE_GENERATOR", "gemini").lower()
+    if generator == "imagen":
+        return IMAGEN_SUPPORTED_RATIOS
+    return GEMINI_SUPPORTED_RATIOS
 
 CropAnchor = Literal["center", "top", "bottom", "left", "right", "smart"]
 
@@ -52,14 +84,19 @@ def get_decimal_ratio(ratio_tuple: Tuple[int, int]) -> float:
     return ratio_tuple[0] / ratio_tuple[1]
 
 
+def is_supported(ratio_str: str) -> bool:
+    """Check if aspect ratio is natively supported by the current generator."""
+    return ratio_str in get_supported_ratios()
+
+
 def is_imagen_supported(ratio_str: str) -> bool:
-    """Check if aspect ratio is natively supported by Imagen."""
+    """Check if aspect ratio is natively supported by Imagen (legacy compatibility)."""
     return ratio_str in IMAGEN_SUPPORTED_RATIOS
 
 
 def select_source_ratio(target_ratio_str: str) -> str:
     """
-    Select the best Imagen-supported source ratio for a target custom ratio.
+    Select the best supported source ratio for a target custom ratio.
 
     Strategy:
     - Generate at a ratio that will contain the target ratio
@@ -71,11 +108,14 @@ def select_source_ratio(target_ratio_str: str) -> str:
         target_ratio_str: Target aspect ratio (e.g., "2:7", "21:9")
 
     Returns:
-        Best Imagen-supported ratio as string (e.g., "16:9")
+        Best supported ratio as string (e.g., "16:9")
     """
+    supported_ratios = get_supported_ratios()
+
     # If target is already supported, use it directly
-    if is_imagen_supported(target_ratio_str):
-        logger.info(f"Target ratio {target_ratio_str} is natively supported by Imagen")
+    if target_ratio_str in supported_ratios:
+        generator = os.getenv("IMAGE_GENERATOR", "gemini").lower()
+        logger.info(f"Target ratio {target_ratio_str} is natively supported by {generator}")
         return target_ratio_str
 
     target_ratio = parse_aspect_ratio(target_ratio_str)
@@ -89,18 +129,18 @@ def select_source_ratio(target_ratio_str: str) -> str:
     if is_square:
         candidates = ["1:1"]
     elif is_portrait:
-        # Portrait: prefer 9:16 > 3:4 > 1:1
-        candidates = ["9:16", "3:4", "1:1"]
+        # Portrait: prefer most extreme portrait ratios first
+        candidates = ["9:16", "2:3", "4:5", "3:4", "1:1"]
     else:
-        # Landscape: prefer 16:9 > 4:3 > 1:1
-        candidates = ["16:9", "4:3", "1:1"]
+        # Landscape: prefer most extreme landscape ratios first
+        candidates = ["21:9", "16:9", "3:2", "5:4", "4:3", "1:1"]
 
     # Find the best candidate that can contain the target
-    best_ratio = candidates[0]
+    best_ratio = candidates[0] if candidates[0] in supported_ratios else list(supported_ratios.keys())[0]
     min_waste = float('inf')
 
-    for candidate_str in IMAGEN_SUPPORTED_RATIOS.keys():
-        candidate = IMAGEN_SUPPORTED_RATIOS[candidate_str]
+    for candidate_str in supported_ratios.keys():
+        candidate = supported_ratios[candidate_str]
         candidate_decimal = get_decimal_ratio(candidate)
 
         # Check if candidate can contain target
@@ -249,20 +289,23 @@ def get_aspect_ratio_strategy(target_ratio_str: str) -> dict:
 
     Returns:
         Dictionary with:
-        - source_ratio: Imagen ratio to use for generation
+        - source_ratio: Supported ratio to use for generation
         - requires_crop: Whether cropping is needed
         - target_ratio: Parsed target ratio
         - strategy: Human-readable strategy description
+        - generator: Which generator's ratios are being used
     """
     target_ratio = parse_aspect_ratio(target_ratio_str)
-    is_supported = is_imagen_supported(target_ratio_str)
+    ratio_supported = is_supported(target_ratio_str)
+    generator = os.getenv("IMAGE_GENERATOR", "gemini").lower()
 
-    if is_supported:
+    if ratio_supported:
         return {
             "source_ratio": target_ratio_str,
             "requires_crop": False,
             "target_ratio": target_ratio,
-            "strategy": f"Generate directly at {target_ratio_str} (natively supported)"
+            "strategy": f"Generate directly at {target_ratio_str} (natively supported by {generator})",
+            "generator": generator
         }
     else:
         source_ratio = select_source_ratio(target_ratio_str)
@@ -270,7 +313,8 @@ def get_aspect_ratio_strategy(target_ratio_str: str) -> dict:
             "source_ratio": source_ratio,
             "requires_crop": True,
             "target_ratio": target_ratio,
-            "strategy": f"Generate at {source_ratio}, then crop to {target_ratio_str}"
+            "strategy": f"Generate at {source_ratio}, then crop to {target_ratio_str}",
+            "generator": generator
         }
 
 
@@ -278,8 +322,18 @@ def get_aspect_ratio_strategy(target_ratio_str: str) -> dict:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    # Test cases
-    test_ratios = ["2:7", "21:9", "16:9", "1:1", "9:21", "3:5"]
+    print("=" * 60)
+    print("ASPECT RATIO ENGINE TEST")
+    print("=" * 60)
+
+    generator = os.getenv("IMAGE_GENERATOR", "gemini").lower()
+    supported = get_supported_ratios()
+    print(f"Generator: {generator}")
+    print(f"Supported ratios: {list(supported.keys())}")
+    print()
+
+    # Test cases - includes ratios that Gemini supports but Imagen doesn't
+    test_ratios = ["2:7", "21:9", "16:9", "1:1", "9:21", "3:5", "2:3", "3:2", "4:5", "5:4"]
 
     for ratio in test_ratios:
         print(f"\nTarget: {ratio}")
