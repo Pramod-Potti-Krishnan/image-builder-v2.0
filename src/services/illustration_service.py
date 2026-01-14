@@ -153,19 +153,23 @@ class IllustrationGenerationService:
             if self.storage:
                 try:
                     # Upload original processed image
-                    image_url = await self.storage.upload_image(
+                    upload_result = self.storage.upload_image(
                         image_bytes=processed_bytes,
                         folder=f"illustrations/{generation_id}",
                         filename="original.png"
                     )
+                    if upload_result.get("success"):
+                        image_url = upload_result.get("url")
 
                     # Upload thumbnail
                     if thumbnail_bytes:
-                        thumbnail_url = await self.storage.upload_image(
+                        thumb_result = self.storage.upload_image(
                             image_bytes=thumbnail_bytes,
                             folder=f"illustrations/{generation_id}",
                             filename="thumbnail.png"
                         )
+                        if thumb_result.get("success"):
+                            thumbnail_url = thumb_result.get("url")
 
                     logger.info(f"Uploaded illustration to Supabase: {image_url}")
 
