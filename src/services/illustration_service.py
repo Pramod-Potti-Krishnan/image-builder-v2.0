@@ -64,7 +64,7 @@ class IllustrationGenerationService:
         # Gemini client configuration
         self.project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT_ID")
         self.location = os.getenv("VERTEX_AI_LOCATION", "us-central1")
-        self.model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-05-20")
+        self.model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-image")
         self._client = None
 
         logger.info(f"IllustrationGenerationService initialized with model={self.model}")
