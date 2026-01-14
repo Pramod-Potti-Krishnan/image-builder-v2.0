@@ -8,6 +8,7 @@ Adapted from v1.0 with enhancements for v2.0.
 
 import os
 import base64
+import json
 import logging
 from typing import Dict, Any, Optional
 from io import BytesIO
