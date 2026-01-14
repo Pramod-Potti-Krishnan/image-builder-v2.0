@@ -13,7 +13,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
@@ -31,12 +31,14 @@ from .models.layout_service_models import (
     LayoutImageGenerateResponse,
     ErrorCodes
 )
+from .models.illustration_models import IllustrationGenerateResponse
 from .services.image_generation_service import ImageGenerationService
 from .services.vertex_ai_service import VertexAIImageGenerator
 from .services.storage_service import SupabaseStorageService
 from .services.layout_generation_service import LayoutGenerationService
 from .services.credits_service import CreditsService
 from .services.style_engine import get_style_names, get_style_descriptions
+from .services.illustration_service import IllustrationGenerationService
 from .config.settings import get_settings
 from .middleware.ip_allowlist import IPAllowlistMiddleware
 
@@ -50,6 +52,7 @@ logger = logging.getLogger(__name__)
 # Global service instances
 image_service: Optional[ImageGenerationService] = None
 layout_service: Optional[LayoutGenerationService] = None
+illustration_service: Optional[IllustrationGenerationService] = None
 
 
 @asynccontextmanager
@@ -58,7 +61,7 @@ async def lifespan(app: FastAPI):
     Application lifespan manager.
     Initializes services on startup, cleans up on shutdown.
     """
-    global image_service, layout_service
+    global image_service, layout_service, illustration_service
 
     # Startup
     logger.info("Initializing Image Build Agent v2.1...")
@@ -109,8 +112,15 @@ async def lifespan(app: FastAPI):
             thumbnail_size=settings.thumbnail_size
         )
 
+        # Initialize Illustration Generation Service
+        illustration_service = IllustrationGenerationService(
+            storage_service=storage,
+            thumbnail_size=settings.thumbnail_size
+        )
+
         logger.info("✅ Image Build Agent v2.1 initialized successfully")
         logger.info(f"   - Layout Service: enabled")
+        logger.info(f"   - Illustration Service: enabled")
         logger.info(f"   - Credits tracking: {settings.enable_credits_tracking}")
         logger.info(f"   - Thumbnail size: {settings.thumbnail_size}px")
 
@@ -169,6 +179,7 @@ async def root():
         "docs": "/docs",
         "endpoints": {
             "v2_generate": "/api/v2/generate",
+            "v2_generate_illustration": "/api/v2/generate-illustration",
             "v2_batch": "/api/v2/generate-batch",
             "v2_models": "/api/v2/models",
             "layout_generate": "/api/ai/image/generate",
@@ -194,7 +205,8 @@ async def health_check():
             "vertex_ai": image_service is not None and image_service.vertex_ai is not None,
             "supabase": image_service is not None and image_service.storage is not None,
             "image_service": image_service is not None,
-            "layout_service": layout_service is not None
+            "layout_service": layout_service is not None,
+            "illustration_service": illustration_service is not None
         }
 
         # Determine overall status
@@ -379,6 +391,89 @@ async def list_available_models():
         "models": models,
         "default": ImagenModel.IMAGEN_3_FAST.value
     }
+
+
+# ============================================================================
+# Illustration Generation Endpoint
+# ============================================================================
+
+@app.post("/api/v2/generate-illustration", response_model=IllustrationGenerateResponse, tags=["Illustration"])
+async def generate_illustration(
+    image: UploadFile = File(..., description="Image file to process into illustration"),
+    unit_count: int = Form(default=5, ge=1, le=10, description="Number of color segments (1-10)"),
+    aspect_ratio: str = Form(default="16:9", description="Output aspect ratio")
+):
+    """
+    Generate an illustration from an uploaded image.
+
+    Processes the image through:
+    1. Gemini 2.5 Flash recreation with standardized dark colors
+    2. Crop to content bounds (removes white canvas)
+    3. Convert dark/black icons to white
+    4. Upload to Supabase Storage
+
+    **Features:**
+    - 10 standardized dark theme colors (purple, blue, red, green, yellow, cyan, orange, teal, pink, indigo)
+    - Automatic cropping to remove excess white canvas
+    - Dark-to-white icon conversion for visibility
+    - Supabase cloud storage with public URLs
+    - Thumbnail generation (256px)
+
+    **Example Request (multipart/form-data):**
+    - image: (file) Your image file (PNG, JPEG, etc.)
+    - unit_count: 5 (number of color segments, 1-10)
+    - aspect_ratio: "16:9" (output aspect ratio)
+
+    **Example Response:**
+    ```json
+    {
+      "success": true,
+      "generation_id": "550e8400-e29b-41d4-a716-446655440000",
+      "image_url": "https://.../illustrations/550e8400.../original.png",
+      "thumbnail_url": "https://.../illustrations/550e8400.../thumbnail.png",
+      "metadata": {
+        "unit_count": 5,
+        "aspect_ratio": "16:9",
+        "colors_used": ["#805AA0", "#2980B9", "#C0392B", "#27AE60", "#D39E1E"],
+        "generation_time_ms": 5200
+      },
+      "created_at": "2024-01-13T12:00:00Z"
+    }
+    ```
+    """
+    if not illustration_service:
+        raise HTTPException(
+            status_code=503,
+            detail="Illustration generation service not initialized"
+        )
+
+    try:
+        # Read uploaded image
+        image_bytes = await image.read()
+        original_filename = image.filename
+
+        logger.info(
+            f"Illustration generation request: filename={original_filename}, "
+            f"unit_count={unit_count}, aspect_ratio={aspect_ratio}"
+        )
+
+        response = await illustration_service.generate(
+            image_bytes=image_bytes,
+            unit_count=unit_count,
+            aspect_ratio=aspect_ratio,
+            original_filename=original_filename
+        )
+
+        if not response.success:
+            raise HTTPException(status_code=500, detail=response.error)
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Illustration generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================

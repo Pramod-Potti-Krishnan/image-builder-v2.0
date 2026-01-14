@@ -8,10 +8,16 @@ from .image_models import (
     HealthCheckResponse
 )
 
+from .illustration_models import (
+    IllustrationGenerateResponse,
+)
+
 __all__ = [
     "AspectRatio",
     "ImageGenerationRequest",
     "ImageGenerationResponse",
     "ImageRecord",
-    "HealthCheckResponse"
+    "HealthCheckResponse",
+    # Illustration models
+    "IllustrationGenerateResponse",
 ]
