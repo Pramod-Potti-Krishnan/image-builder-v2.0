@@ -141,7 +141,7 @@ class IllustrationGenerationService:
             processed_bytes = self.processor.process(generated_bytes)
 
             # Step 3: Generate thumbnail
-            thumbnail_bytes = self.thumbnail_service.generate_thumbnail(
+            thumbnail_bytes = self.thumbnail_service.generate(
                 processed_bytes,
                 max_size=self.thumbnail_size
             )
