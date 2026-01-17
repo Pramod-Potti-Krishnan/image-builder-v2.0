@@ -12,6 +12,18 @@ from .illustration_models import (
     IllustrationGenerateResponse,
 )
 
+from .atomic_models import (
+    ImageAtomicRequest,
+    ImageAtomicResponse,
+    ImageAtomicMetadata,
+    ImageAtomicConfig,
+    ImageAtomicOptions,
+    ImageAtomicContext,
+    AtomicHealthResponse,
+    StylesResponse,
+    StyleInfo,
+)
+
 __all__ = [
     "AspectRatio",
     "ImageGenerationRequest",
@@ -20,4 +32,14 @@ __all__ = [
     "HealthCheckResponse",
     # Illustration models
     "IllustrationGenerateResponse",
+    # Atomic models
+    "ImageAtomicRequest",
+    "ImageAtomicResponse",
+    "ImageAtomicMetadata",
+    "ImageAtomicConfig",
+    "ImageAtomicOptions",
+    "ImageAtomicContext",
+    "AtomicHealthResponse",
+    "StylesResponse",
+    "StyleInfo",
 ]

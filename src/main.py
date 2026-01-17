@@ -39,8 +39,10 @@ from .services.layout_generation_service import LayoutGenerationService
 from .services.credits_service import CreditsService
 from .services.style_engine import get_style_names, get_style_descriptions
 from .services.illustration_service import IllustrationGenerationService
+from .services.atomic_generation_service import AtomicImageGenerationService
 from .config.settings import get_settings
 from .middleware.ip_allowlist import IPAllowlistMiddleware
+from .api.atomic_routes import router as atomic_router, set_atomic_service
 
 # Configure logging
 logging.basicConfig(
@@ -53,6 +55,7 @@ logger = logging.getLogger(__name__)
 image_service: Optional[ImageGenerationService] = None
 layout_service: Optional[LayoutGenerationService] = None
 illustration_service: Optional[IllustrationGenerationService] = None
+atomic_service: Optional[AtomicImageGenerationService] = None
 
 
 @asynccontextmanager
@@ -61,7 +64,7 @@ async def lifespan(app: FastAPI):
     Application lifespan manager.
     Initializes services on startup, cleans up on shutdown.
     """
-    global image_service, layout_service, illustration_service
+    global image_service, layout_service, illustration_service, atomic_service
 
     # Startup
     logger.info("Initializing Image Build Agent v2.1...")
@@ -118,9 +121,16 @@ async def lifespan(app: FastAPI):
             thumbnail_size=settings.thumbnail_size
         )
 
+        # Initialize Atomic Image Generation Service
+        atomic_service = AtomicImageGenerationService(
+            layout_service=layout_service
+        )
+        set_atomic_service(atomic_service)
+
         logger.info("✅ Image Build Agent v2.1 initialized successfully")
         logger.info(f"   - Layout Service: enabled")
         logger.info(f"   - Illustration Service: enabled")
+        logger.info(f"   - Atomic Service: enabled")
         logger.info(f"   - Credits tracking: {settings.enable_credits_tracking}")
         logger.info(f"   - Thumbnail size: {settings.thumbnail_size}px")
 
@@ -161,6 +171,9 @@ app.add_middleware(
     enable_allowlist=settings_for_middleware.enable_ip_allowlist
 )
 
+# Include atomic routes
+app.include_router(atomic_router)
+
 
 # Note: API Key authentication has been replaced with IP Allowlist middleware
 # All security is now handled at the middleware level based on allowed IPs
@@ -185,6 +198,9 @@ async def root():
             "layout_generate": "/api/ai/image/generate",
             "layout_styles": "/api/ai/image/styles",
             "layout_credits": "/api/ai/image/credits/{presentation_id}",
+            "atomic_generate": "/api/v1/images/atomic/generate",
+            "atomic_health": "/api/v1/images/atomic/health",
+            "atomic_styles": "/api/v1/images/atomic/styles",
             "health": "/api/v2/health"
         }
     }
@@ -206,7 +222,8 @@ async def health_check():
             "supabase": image_service is not None and image_service.storage is not None,
             "image_service": image_service is not None,
             "layout_service": layout_service is not None,
-            "illustration_service": illustration_service is not None
+            "illustration_service": illustration_service is not None,
+            "atomic_service": atomic_service is not None
         }
 
         # Determine overall status
