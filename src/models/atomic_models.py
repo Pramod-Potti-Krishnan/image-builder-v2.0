@@ -12,7 +12,7 @@ Follows patterns established by:
 """
 
 from typing import Dict, List, Optional, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime
 import uuid
 
@@ -37,6 +37,79 @@ GRID_CELL_SIZE = 60
 MAX_GRID_WIDTH = 32
 MAX_GRID_HEIGHT = 18
 MIN_GRID_SIZE = 4
+
+
+# ============================================================================
+# Position Model (for Layout Service Element API integration)
+# ============================================================================
+
+class ImageAtomicPosition(BaseModel):
+    """
+    Position specification for image elements using CSS Grid format.
+
+    Used by the Layout Service Element API to position images on slides.
+    Format uses "start/end" notation (e.g., "4/12" means grid lines 4 to 12).
+    """
+
+    grid_row: str = Field(
+        ...,
+        description="Grid row position in CSS Grid format, e.g., '4/12' (lines 4 to 12)"
+    )
+    grid_column: str = Field(
+        ...,
+        description="Grid column position in CSS Grid format, e.g., '2/18' (lines 2 to 18)"
+    )
+
+    @field_validator('grid_row', 'grid_column')
+    @classmethod
+    def validate_grid_position(cls, v: str) -> str:
+        """Validate grid position format (start/end)."""
+        if '/' not in v:
+            raise ValueError(f"Grid position must be in 'start/end' format, got: {v}")
+        parts = v.split('/')
+        if len(parts) != 2:
+            raise ValueError(f"Grid position must have exactly two values (start/end), got: {v}")
+        try:
+            start, end = int(parts[0]), int(parts[1])
+            if start < 1:
+                raise ValueError(f"Grid start must be >= 1, got: {start}")
+            if end <= start:
+                raise ValueError(f"Grid end must be > start, got end={end} start={start}")
+        except ValueError as e:
+            if "invalid literal" in str(e):
+                raise ValueError(f"Grid position values must be integers, got: {v}")
+            raise
+        return v
+
+    @property
+    def row_start(self) -> int:
+        """Get the row start line number."""
+        return int(self.grid_row.split('/')[0])
+
+    @property
+    def row_end(self) -> int:
+        """Get the row end line number."""
+        return int(self.grid_row.split('/')[1])
+
+    @property
+    def column_start(self) -> int:
+        """Get the column start line number."""
+        return int(self.grid_column.split('/')[0])
+
+    @property
+    def column_end(self) -> int:
+        """Get the column end line number."""
+        return int(self.grid_column.split('/')[1])
+
+    @property
+    def width(self) -> int:
+        """Calculate width in grid units (end - start)."""
+        return self.column_end - self.column_start
+
+    @property
+    def height(self) -> int:
+        """Calculate height in grid units (end - start)."""
+        return self.row_end - self.row_start
 
 
 # ============================================================================
@@ -123,19 +196,34 @@ class ImageAtomicRequest(BaseModel):
     """
     Request model for atomic image generation.
 
-    The frontend specifies grid dimensions (60px cells) and this service:
-    1. Calculates aspect ratio from grid dimensions
+    The frontend specifies position (CSS Grid format) or grid dimensions, and this service:
+    1. Calculates aspect ratio from position/dimensions
     2. Generates image with AI
-    3. Returns CDN URLs and element_id for Layout Service
+    3. Returns CDN URLs, element_id, and position for Layout Service Element API
 
-    Example:
+    Example with position (preferred for Layout Service Element API):
+    ```json
+    {
+        "prompt": "Modern office with team collaboration",
+        "presentation_id": "pres-001",
+        "slide_id": "slide-005",
+        "grid_row": "4/14",
+        "grid_column": "2/18",
+        "config": {
+            "style": "realistic",
+            "quality": "standard"
+        }
+    }
+    ```
+
+    Example with dimensions (backward compatible):
     ```json
     {
         "prompt": "Modern office with team collaboration",
         "presentation_id": "pres-001",
         "slide_id": "slide-005",
         "grid_width": 16,
-        "grid_height": 9,
+        "grid_height": 10,
         "config": {
             "style": "realistic",
             "quality": "standard"
@@ -162,18 +250,28 @@ class ImageAtomicRequest(BaseModel):
         description="Unique slide identifier (for element ID generation)"
     )
 
-    # Grid dimensions (60px cells)
-    grid_width: int = Field(
-        ...,
+    # Position fields (CSS Grid format - preferred for Layout Service Element API)
+    grid_row: Optional[str] = Field(
+        None,
+        description="Grid row position in CSS Grid format, e.g., '4/14' (lines 4 to 14). If provided, grid_height is calculated from this."
+    )
+    grid_column: Optional[str] = Field(
+        None,
+        description="Grid column position in CSS Grid format, e.g., '2/18' (lines 2 to 18). If provided, grid_width is calculated from this."
+    )
+
+    # Grid dimensions (60px cells) - used if position not provided
+    grid_width: Optional[int] = Field(
+        None,
         ge=MIN_GRID_SIZE,
         le=MAX_GRID_WIDTH,
-        description=f"Width in grid units ({MIN_GRID_SIZE}-{MAX_GRID_WIDTH}, each unit = {GRID_CELL_SIZE}px)"
+        description=f"Width in grid units ({MIN_GRID_SIZE}-{MAX_GRID_WIDTH}, each unit = {GRID_CELL_SIZE}px). Required if grid_column not provided."
     )
-    grid_height: int = Field(
-        ...,
+    grid_height: Optional[int] = Field(
+        None,
         ge=MIN_GRID_SIZE,
         le=MAX_GRID_HEIGHT,
-        description=f"Height in grid units ({MIN_GRID_SIZE}-{MAX_GRID_HEIGHT}, each unit = {GRID_CELL_SIZE}px)"
+        description=f"Height in grid units ({MIN_GRID_SIZE}-{MAX_GRID_HEIGHT}, each unit = {GRID_CELL_SIZE}px). Required if grid_row not provided."
     )
 
     # Optional fields
@@ -232,6 +330,84 @@ class ImageAtomicRequest(BaseModel):
             except ValueError:
                 raise ValueError("Aspect ratio values must be integers")
         return v
+
+    @field_validator('grid_row', 'grid_column')
+    @classmethod
+    def validate_grid_position(cls, v: Optional[str]) -> Optional[str]:
+        """Validate grid position format (start/end)."""
+        if v is None:
+            return v
+        if '/' not in v:
+            raise ValueError(f"Grid position must be in 'start/end' format, got: {v}")
+        parts = v.split('/')
+        if len(parts) != 2:
+            raise ValueError(f"Grid position must have exactly two values (start/end), got: {v}")
+        try:
+            start, end = int(parts[0]), int(parts[1])
+            if start < 1:
+                raise ValueError(f"Grid start must be >= 1, got: {start}")
+            if end <= start:
+                raise ValueError(f"Grid end must be > start, got end={end} start={start}")
+        except ValueError as e:
+            if "invalid literal" in str(e):
+                raise ValueError(f"Grid position values must be integers, got: {v}")
+            raise
+        return v
+
+    @model_validator(mode='after')
+    def validate_dimensions_or_position(self):
+        """
+        Ensure either position (grid_row + grid_column) or dimensions (grid_width + grid_height) are provided.
+        If position is provided, calculate dimensions from it.
+        """
+        has_position = self.grid_row is not None and self.grid_column is not None
+        has_dimensions = self.grid_width is not None and self.grid_height is not None
+
+        if not has_position and not has_dimensions:
+            raise ValueError(
+                "Either position (grid_row + grid_column) or dimensions (grid_width + grid_height) must be provided"
+            )
+
+        # If position is provided, calculate dimensions from it
+        if has_position:
+            # Parse row position
+            row_parts = self.grid_row.split('/')
+            row_start, row_end = int(row_parts[0]), int(row_parts[1])
+            calculated_height = row_end - row_start
+
+            # Parse column position
+            col_parts = self.grid_column.split('/')
+            col_start, col_end = int(col_parts[0]), int(col_parts[1])
+            calculated_width = col_end - col_start
+
+            # Validate calculated dimensions
+            if calculated_width < MIN_GRID_SIZE or calculated_width > MAX_GRID_WIDTH:
+                raise ValueError(
+                    f"Calculated width {calculated_width} from grid_column must be between {MIN_GRID_SIZE} and {MAX_GRID_WIDTH}"
+                )
+            if calculated_height < MIN_GRID_SIZE or calculated_height > MAX_GRID_HEIGHT:
+                raise ValueError(
+                    f"Calculated height {calculated_height} from grid_row must be between {MIN_GRID_SIZE} and {MAX_GRID_HEIGHT}"
+                )
+
+            # Set dimensions from position (override any provided values)
+            object.__setattr__(self, 'grid_width', calculated_width)
+            object.__setattr__(self, 'grid_height', calculated_height)
+
+        return self
+
+    @property
+    def position(self) -> Optional[ImageAtomicPosition]:
+        """
+        Get position object for Layout Service Element API.
+        Returns None if position was not provided (only dimensions were given).
+        """
+        if self.grid_row is not None and self.grid_column is not None:
+            return ImageAtomicPosition(
+                grid_row=self.grid_row,
+                grid_column=self.grid_column
+            )
+        return None
 
     @property
     def pixel_width(self) -> int:
@@ -302,7 +478,7 @@ class ImageAtomicResponse(BaseModel):
     """
     Response model for atomic image generation.
 
-    Success Example:
+    Success Example (with position for Layout Service Element API):
     ```json
     {
         "success": true,
@@ -310,12 +486,16 @@ class ImageAtomicResponse(BaseModel):
         "thumbnail_url": "https://cdn.example.com/images/abc123/thumb.png",
         "element_id": "image_a1b2c3d4",
         "component_type": "IMAGE",
+        "position": {
+            "grid_row": "4/14",
+            "grid_column": "2/18"
+        },
         "metadata": {
             "generation_time_ms": 4523,
             "model_used": "imagen-3.0-fast-generate-001",
-            "grid_dimensions": {"width": 16, "height": 9},
-            "actual_dimensions": {"width": 1024, "height": 576},
-            "aspect_ratio": "16:9",
+            "grid_dimensions": {"width": 16, "height": 10},
+            "actual_dimensions": {"width": 1024, "height": 640},
+            "aspect_ratio": "16:10",
             "style_applied": "realistic",
             "provider": "vertex-ai",
             "credits_used": 2
@@ -358,6 +538,10 @@ class ImageAtomicResponse(BaseModel):
     component_type: Literal["IMAGE"] = Field(
         default="IMAGE",
         description="Component type for Layout Service"
+    )
+    position: Optional[ImageAtomicPosition] = Field(
+        None,
+        description="Position for Layout Service Element API (only present if position was specified in request)"
     )
     metadata: Optional[ImageAtomicMetadata] = Field(
         None,

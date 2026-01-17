@@ -22,6 +22,7 @@ from ..models.atomic_models import (
     ImageAtomicRequest,
     ImageAtomicResponse,
     ImageAtomicMetadata,
+    ImageAtomicPosition,
     GRID_CELL_SIZE,
     QUALITY_CREDITS
 )
@@ -221,6 +222,7 @@ class AtomicImageGenerationService:
             thumbnail_url=image_data.thumbnailUrl,
             element_id=element_id,
             component_type="IMAGE",
+            position=atomic_request.position,  # Include position for Layout Service Element API
             metadata=metadata
         )
 
@@ -287,6 +289,7 @@ class AtomicImageGenerationService:
             thumbnail_url=thumbnail_url,
             element_id=element_id,
             component_type="IMAGE",
+            position=atomic_request.position,  # Include position for Layout Service Element API
             metadata=metadata
         )
 
