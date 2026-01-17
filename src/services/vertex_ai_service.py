@@ -64,7 +64,6 @@ class VertexAIImageGenerator:
                 decoded = base64.b64decode(creds_env)
                 # If successful, write to temporary file
                 import tempfile
-                import json
 
                 # Verify it's valid JSON
                 creds_json = json.loads(decoded)
