@@ -35,7 +35,7 @@ NC='\033[0m' # No Color
 
 # Service URLs (update these as needed)
 LAYOUT_SERVICE_URL="${LAYOUT_SERVICE_URL:-https://web-production-f0d13.up.railway.app}"
-IMAGE_SERVICE_URL="${IMAGE_SERVICE_URL:-https://image-builder-v20-production.up.railway.app}"
+IMAGE_SERVICE_URL="${IMAGE_SERVICE_URL:-https://web-production-1b5df.up.railway.app}"
 
 # Use placeholder mode if argument provided
 PLACEHOLDER_MODE=false

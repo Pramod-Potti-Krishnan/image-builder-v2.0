@@ -100,7 +100,7 @@ class AtomicImageGenerationService:
     ) -> str:
         """
         Build self-contained HTML wrapper for the image element.
-        Uses uniform 10px padding for consistent margins.
+        Images fill edge-to-edge within their grid cells.
 
         Args:
             image_url: CDN URL to the image
@@ -110,11 +110,11 @@ class AtomicImageGenerationService:
         Returns:
             HTML string with inline styles
         """
-        return f'''<div class="image-element" data-element-id="{element_id}" style="width: 100%; height: 100%; padding: 10px; box-sizing: border-box; position: relative; overflow: hidden;">
+        return f'''<div class="image-element" data-element-id="{element_id}" style="width: 100%; height: 100%; position: relative; overflow: hidden;">
     <img
         src="{image_url}"
         alt="{alt_text}"
-        style="width: 100%; height: 100%; object-fit: contain; display: block"
+        style="width: 100%; height: 100%; object-fit: cover; display: block"
         loading="lazy"
     />
 </div>'''
