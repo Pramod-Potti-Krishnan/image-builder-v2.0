@@ -531,6 +531,10 @@ class ImageAtomicResponse(BaseModel):
         None,
         description="CDN URL to thumbnail (256px)"
     )
+    html: Optional[str] = Field(
+        None,
+        description="Self-contained HTML for the image element with inline styles"
+    )
     element_id: Optional[str] = Field(
         None,
         description="Element ID for Layout Service (format: image_{uuid8})"

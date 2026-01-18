@@ -92,6 +92,33 @@ class AtomicImageGenerationService:
 
         return element_id
 
+    def _build_image_html(
+        self,
+        image_url: str,
+        element_id: str,
+        alt_text: str = "AI-generated image"
+    ) -> str:
+        """
+        Build self-contained HTML wrapper for the image element.
+        Uses uniform 10px padding for consistent margins.
+
+        Args:
+            image_url: CDN URL to the image
+            element_id: Element ID for data attribute
+            alt_text: Alt text for accessibility
+
+        Returns:
+            HTML string with inline styles
+        """
+        return f'''<div class="image-element" data-element-id="{element_id}" style="width: 100%; height: 100%; padding: 10px; box-sizing: border-box; position: relative; overflow: hidden;">
+    <img
+        src="{image_url}"
+        alt="{alt_text}"
+        style="width: 100%; height: 100%; object-fit: contain; display: block"
+        loading="lazy"
+    />
+</div>'''
+
     def _to_layout_request(
         self,
         atomic_request: ImageAtomicRequest,
@@ -216,10 +243,18 @@ class AtomicImageGenerationService:
             credits_used=data.usage.creditsUsed if data.usage else 0
         )
 
+        # Build HTML wrapper
+        html = self._build_image_html(
+            image_url=image_data.url,
+            element_id=element_id,
+            alt_text=f"Generated image: {atomic_request.prompt[:50]}..."
+        )
+
         return ImageAtomicResponse(
             success=True,
             image_url=image_data.url,
             thumbnail_url=image_data.thumbnailUrl,
+            html=html,
             element_id=element_id,
             component_type="IMAGE",
             position=atomic_request.position,  # Include position for Layout Service Element API
@@ -283,10 +318,18 @@ class AtomicImageGenerationService:
             credits_used=0  # No credits used for placeholders
         )
 
+        # Build HTML wrapper
+        html = self._build_image_html(
+            image_url=placeholder_url,
+            element_id=element_id,
+            alt_text="Image placeholder"
+        )
+
         return ImageAtomicResponse(
             success=True,
             image_url=placeholder_url,
             thumbnail_url=thumbnail_url,
+            html=html,
             element_id=element_id,
             component_type="IMAGE",
             position=atomic_request.position,  # Include position for Layout Service Element API
